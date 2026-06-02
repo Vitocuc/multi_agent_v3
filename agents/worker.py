@@ -1,20 +1,22 @@
 """
 agents/worker.py
 
-Worker node — implements a feature via Claude API with tool use.
+Worker node — implements a feature via Claude API.
 
-bash tool calls run inside the Docker test container (docker/runner.py).
-file_write and file_read operate on the host filesystem (project root).
+The worker has NO git access. Its only job is:
+  1. Read the contracts and memory
+  2. Write source files
+  3. Run tests (via a sandboxed test_runner tool — no shell access)
+  4. Fill the milestone report
 
-Docker is required — the worker fails fast with a clear error if the
-container image is not built or the daemon is not running.
+All git operations (branch, commit, push, PR) are handled by the pipeline
+in graph.py using git_ops.py. The worker never touches version control.
 """
 from __future__ import annotations
 import os
 import re
 import json
 from pathlib import Path
-from typing import Optional
 
 from schemas.graph_state import FeatureContext, WorkerResult
 from docker.runner import DockerRunner, DockerNotAvailableError, ImageNotBuiltError
@@ -23,64 +25,82 @@ ROOT = Path(__file__).parent.parent
 
 _WORKER_SYSTEM = """You are a worker agent implementing a single software feature.
 
-Rules you must follow without exception:
-1. Read doc1_security_contract.md before writing any code.
-2. Implement ONLY the feature described in your context — no scope creep.
-3. Create your branch from develop: git fetch origin && git checkout develop 2>/dev/null || git checkout -b develop && git checkout -b {branch_name}
-4. Commands run inside Docker — paths are relative to /project (the repo root).
-5. Run: install deps → lint → tests → dependency audit. Record every command.
-6. Fill reports/{feature_id}_milestone.md completely (copy from doc4_milestone_report.md).
-7. Open a PR targeting develop: gh pr create --base develop --title "[{feature_id}] {title}" --body "$(cat reports/{feature_id}_milestone.md)"
-8. Do not merge. Stop after opening the PR.
-9. No secrets in code, logs, or milestone report summaries.
-10. All inputs validated. Auth enforced on every protected route.
-11. security_checklist_followed: true only if EVERY item in doc1 checklist is addressed.
+Your job is to write code and fill the milestone report.
+You do NOT handle git, branches, commits, or pull requests.
+The pipeline handles all version control — focus entirely on implementation.
+
+Rules:
+1. file_read doc1_security_contract.md before writing any code.
+2. file_read doc4_milestone_report.md — this is the template you will fill.
+3. Implement ONLY the feature described in your context. No scope creep.
+4. Use test_runner to run: install → lint → test → audit after implementation.
+5. Write the completed milestone report to reports/{feature_id}_milestone.md.
+6. Stop when the milestone report is written. Do not run git. Do not open PRs.
 
 You have three tools:
-- bash: runs inside the Docker test container. The project is mounted at /project.
-- file_write: writes a file to the project on the host filesystem.
-- file_read: reads a file from the project on the host filesystem."""
+- file_read:    read any file in the project
+- file_write:   write any file in the project (source code, milestone report)
+- test_runner:  run a named test phase inside Docker (install/lint/test/audit)
+
+Security rules (always apply):
+- No secrets or tokens in any file you write
+- Validate all external inputs at the boundary
+- Auth enforced on every protected route before loading data
+- Error responses never contain stack traces or internal paths
+- security_checklist_followed: true only if every item in doc1 is addressed"""
 
 _TOOLS = [
     {
-        "name": "bash",
-        "description": (
-            "Run a shell command inside the Docker test container. "
-            "The project root is mounted at /project. "
-            "Use this for: git, npm/pip/cargo, lint, test, audit, gh CLI."
-        ),
+        "name": "file_read",
+        "description": "Read a file from the project.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "command": {
+                "path": {
                     "type": "string",
-                    "description": "Shell command. Paths relative to /project.",
+                    "description": "File path relative to project root.",
                 },
             },
-            "required": ["command"],
+            "required": ["path"],
         },
     },
     {
         "name": "file_write",
-        "description": "Write content to a file in the project (host filesystem).",
+        "description": "Write content to a file in the project.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "path":    {"type": "string", "description": "Path relative to project root"},
-                "content": {"type": "string", "description": "File content"},
+                "path":    {"type": "string", "description": "File path relative to project root."},
+                "content": {"type": "string", "description": "Full file content."},
             },
             "required": ["path", "content"],
         },
     },
     {
-        "name": "file_read",
-        "description": "Read a file from the project (host filesystem).",
+        "name": "test_runner",
+        "description": (
+            "Run a test phase inside the Docker container. "
+            "Returns exit code, stdout summary, and any errors. "
+            "Available phases: install, lint, test, audit. "
+            "Always run all four in order after implementing."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Path relative to project root"},
+                "phase": {
+                    "type": "string",
+                    "enum": ["install", "lint", "test", "audit"],
+                    "description": "Which phase to run.",
+                },
+                "command": {
+                    "type": "string",
+                    "description": (
+                        "The exact shell command to run for this phase. "
+                        "E.g. 'npm install', 'npm run lint', 'npm test', 'npm audit'."
+                    ),
+                },
             },
-            "required": ["path"],
+            "required": ["phase", "command"],
         },
     },
 ]
@@ -91,14 +111,8 @@ _TOOLS = [
 # ---------------------------------------------------------------------------
 
 def _load_standing_rules(root: Path) -> str:
-    """
-    Load CLAUDE.md and all .claude/rules/*.md files.
-    Injected into the API system prompt so the worker receives the same
-    instructions it would get running Claude Code manually.
-    Strips paths: frontmatter — those are Claude Code directives, not API content.
-    """
+    """Load CLAUDE.md and .claude/rules/*.md into the system prompt."""
     parts = []
-
     claude_md = root / "CLAUDE.md"
     if claude_md.exists():
         parts.append(claude_md.read_text().strip())
@@ -107,6 +121,7 @@ def _load_standing_rules(root: Path) -> str:
     if rules_dir.exists():
         for f in sorted(rules_dir.glob("*.md")):
             content = f.read_text().strip()
+            # Strip paths: frontmatter — Claude Code directive, not API content
             content = re.sub(r"^---\n.*?\n---\n?", "", content, flags=re.DOTALL).strip()
             if content:
                 parts.append(content)
@@ -115,85 +130,70 @@ def _load_standing_rules(root: Path) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Main worker entry point
+# Main entry point
 # ---------------------------------------------------------------------------
 
 def run(context: FeatureContext, root: Path = ROOT) -> WorkerResult:
     """
-    Run the worker for a feature.
-    1. Verifies Docker is available and the test image is built.
-    2. Calls Claude API in an agentic tool-use loop.
-    3. bash tool calls run inside Docker; file_* calls operate on host.
-    4. Returns WorkerResult with the milestone report text.
+    Run the worker for one feature.
+    Returns WorkerResult — the pipeline reads this to decide next steps.
     """
     import urllib.request
-    import urllib.error
 
     fid = context["feature_id"]
 
-    # ── Step 1: verify Docker before calling the API ─────────────────────────
+    # Verify Docker (test_runner tool needs it)
     runner = DockerRunner(root=root)
     try:
         runner.verify()
     except DockerNotAvailableError as e:
-        return WorkerResult(
-            feature_id=fid, success=False, milestone_report="",
-            error=f"Docker not available: {e}",
-        )
+        return WorkerResult(feature_id=fid, success=False, milestone_report="",
+                            error=f"Docker not available: {e}")
     except ImageNotBuiltError as e:
-        return WorkerResult(
-            feature_id=fid, success=False, milestone_report="",
-            error=f"Test image not built: {e}",
-        )
+        return WorkerResult(feature_id=fid, success=False, milestone_report="",
+                            error=f"Test image not built: {e}")
 
-    # ── Step 2: check API key ─────────────────────────────────────────────────
     api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if not api_key:
-        return WorkerResult(
-            feature_id=fid, success=False, milestone_report="",
-            error="ANTHROPIC_API_KEY not set in .env",
-        )
+        return WorkerResult(feature_id=fid, success=False, milestone_report="",
+                            error="ANTHROPIC_API_KEY not set in .env")
 
     model   = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-20250514")
     mem_str = json.dumps(context["memory"], indent=2)
 
-    # ── Step 3: build initial prompt ─────────────────────────────────────────
+    # Build initial prompt
     initial_prompt = (
         f"You are implementing feature {fid}: {context['title']}.\n\n"
-        f"## Feature block\n{context['block_text']}\n\n"
-        f"## Filtered project memory\n```json\n{mem_str}\n```\n\n"
-        "## Your task\n"
+        "## Your feature block\n"
+        f"{context['block_text']}\n\n"
+        "## Filtered project memory\n"
+        f"```json\n{mem_str}\n```\n\n"
+        "## Steps\n"
         "1. file_read doc1_security_contract.md\n"
-        "2. file_read doc4_milestone_report.md (the template)\n"
-        f"3. Set up branch from develop:\n   bash → git fetch origin && (git checkout develop 2>/dev/null || git checkout -b develop origin/develop 2>/dev/null || git checkout -b develop) && git checkout -b {context['branch_name']}\n"
-        "4. Implement the feature\n"
-        "5. Run: install → lint → test → audit (all inside Docker via bash tool)\n"
-        f"6. file_write reports/{fid}_milestone.md with completed report\n"
-        f"7. bash → git add . && git commit && git push -u origin {context['branch_name']}"
-        f" && gh pr create --base develop"
-        f" --title '[{fid}] {context['title']}'"
-        f" --body \"$(cat reports/{fid}_milestone.md)\"\n\n"
-        "Start by reading doc1_security_contract.md."
+        "2. file_read doc4_milestone_report.md\n"
+        "3. Implement the feature — write source files using file_write\n"
+        "4. test_runner phase=install\n"
+        "5. test_runner phase=lint\n"
+        "6. test_runner phase=test\n"
+        "7. test_runner phase=audit\n"
+        f"8. file_write reports/{fid}_milestone.md — fill every field\n\n"
+        "Do NOT run git commands. Do NOT open PRs. The pipeline handles that.\n"
+        "Start with step 1."
     )
 
-    # ── Step 4: build system prompt ───────────────────────────────────────────
+    # Build system prompt: base rules + CLAUDE.md + rules files
     standing_rules = _load_standing_rules(root)
-    base_system    = _WORKER_SYSTEM.format(
-        branch_name=context["branch_name"],
-        feature_id=fid,
-        title=context["title"],
-    )
-    system = base_system
+    system = _WORKER_SYSTEM.format(feature_id=fid)
     if standing_rules:
         system += "\n\n---\n\n" + standing_rules
 
     messages = [{"role": "user", "content": initial_prompt}]
 
-    # ── Step 5: agentic loop ──────────────────────────────────────────────────
-    for turn in range(40):   # 40 turns: generous for complex features
+    # Agentic loop — 40 turns max
+    for turn in range(40):
         payload = json.dumps({
             "model":      model,
-            "max_tokens": 4096,
+            "max_tokens": 16384,   # generous — complex features need room
             "system":     system,
             "tools":      _TOOLS,
             "messages":   messages,
@@ -240,12 +240,7 @@ def run(context: FeatureContext, root: Path = ROOT) -> WorkerResult:
             for block in content:
                 if block.get("type") != "tool_use":
                     continue
-                result_str = _execute_tool(
-                    name=block["name"],
-                    inp=block["input"],
-                    root=root,
-                    runner=runner,
-                )
+                result_str = _execute_tool(block["name"], block["input"], root, runner)
                 tool_results.append({
                     "type":        "tool_result",
                     "tool_use_id": block["id"],
@@ -254,41 +249,26 @@ def run(context: FeatureContext, root: Path = ROOT) -> WorkerResult:
             messages.append({"role": "user", "content": tool_results})
             continue
 
-        break   # unexpected stop reason
+        break
 
-    return WorkerResult(
-        feature_id=fid, success=False, milestone_report="",
-        error="Worker exceeded maximum turns (40) without completing",
-    )
+    return WorkerResult(feature_id=fid, success=False, milestone_report="",
+                        error="Worker exceeded 40 turns without completing")
 
 
 # ---------------------------------------------------------------------------
 # Tool executor
 # ---------------------------------------------------------------------------
 
-def _execute_tool(
-    name:   str,
-    inp:    dict,
-    root:   Path,
-    runner: DockerRunner,
-) -> str:
-    """
-    Execute a single tool call.
-    - bash      → runs inside Docker via runner
-    - file_write / file_read → operate on host filesystem
-    """
+def _execute_tool(name: str, inp: dict, root: Path, runner: DockerRunner) -> str:
     try:
-        if name == "bash":
-            result = runner.run(inp["command"])
-            output = result.stdout + result.stderr
-            # Truncate long output before returning to LLM
-            if len(output) > 3000:
-                output = output[:1500] + "\n...[truncated]...\n" + output[-800:]
-            return (
-                f"exit_code: {result.exit_code}\n"
-                f"summary: {result.summary}\n"
-                f"output:\n{output}"
-            )
+        if name == "file_read":
+            path = root / inp["path"]
+            if not path.exists():
+                return f"Error: {inp['path']} not found"
+            content = path.read_text()
+            if len(content) > 6000:
+                content = content[:3000] + "\n...[truncated]...\n" + content[-1500:]
+            return content
 
         elif name == "file_write":
             path = root / inp["path"]
@@ -296,14 +276,23 @@ def _execute_tool(
             path.write_text(inp["content"])
             return f"Written: {inp['path']} ({len(inp['content'])} chars)"
 
-        elif name == "file_read":
-            path = root / inp["path"]
-            if not path.exists():
-                return f"Error: {inp['path']} not found"
-            content = path.read_text()
-            if len(content) > 4000:
-                content = content[:2000] + "\n...[truncated]...\n" + content[-1000:]
-            return content
+        elif name == "test_runner":
+            phase   = inp.get("phase", "")
+            command = inp.get("command", "")
+            if not command:
+                return f"Error: command is required for test_runner phase={phase}"
+
+            result = runner.run(command)
+            output = result.stdout + result.stderr
+            if len(output) > 3000:
+                output = output[:1500] + "\n...[truncated]...\n" + output[-800:]
+            return (
+                f"phase: {phase}\n"
+                f"command: {command}\n"
+                f"exit_code: {result.exit_code}\n"
+                f"summary: {result.summary}\n"
+                f"output:\n{output}"
+            )
 
         else:
             return f"Error: unknown tool '{name}'"

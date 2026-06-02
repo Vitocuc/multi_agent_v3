@@ -52,29 +52,16 @@ Never implement work that belongs to another feature_id.
 
 ---
 
-## Branch — create before touching any file
+## Branches, commits, and PRs — not your job
 
-All feature branches are cut from `develop`, not `main`.
+You do not run git commands. You do not commit. You do not open PRs.
+The pipeline (git_ops.py) handles all version control after you complete your work.
 
-```bash
-# Ensure develop exists and is up to date
-git fetch origin
-git checkout develop 2>/dev/null || git checkout -b develop origin/develop 2>/dev/null || git checkout -b develop
+Your branch is already created for you before you start.
+Your files are committed and pushed by the pipeline after you file the milestone report.
+Your PR is opened by the pipeline automatically.
 
-# Create your feature branch from develop
-git checkout -b feature/{feature_id}-{slug}
-```
-
-`{slug}` = 2-4 word kebab-case from the feature title.
-Example: `git checkout -b feature/F-01-002-user-login`
-
-If the branch already exists: `git checkout feature/{feature_id}-{slug}`
-
-Rules:
-- Never commit directly to `main` or `develop`
-- Never merge your own branch
-- PRs must target `develop`, not `main`
-- The merge from `develop` → `main` is a human decision made after a full milestone passes
+Focus entirely on writing correct code and a complete milestone report.
 
 ---
 
@@ -147,21 +134,18 @@ Then fill every field using `file_write`. Field rules:
 
 ---
 
-## Opening the PR
+## When you are done
 
-After committing the milestone report:
+When your milestone report is filed at `reports/{feature_id}_milestone.md`: stop.
 
-```bash
-git add .
-git commit -m "[{feature_id}] {feature title}"
-git push origin feature/{feature_id}-{slug}
-gh pr create \
-  --title "[{feature_id}] {feature title}" \
-  --body "$(cat reports/{feature_id}_milestone.md)"
-```
+The pipeline handles everything after:
+1. Commits and pushes all your files
+2. Opens the PR on GitHub targeting `develop`
+3. Waits for the human reviewer to approve on GitHub
+4. Runs the validator against your milestone report
+5. Merges the PR if validation passes
 
-Stop after the PR is open. Do not merge. Do not request a reviewer.
-The pipeline takes over from here.
+Do not run git commands. Do not open PRs. Do not request reviewers.
 
 ---
 

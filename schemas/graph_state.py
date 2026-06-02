@@ -56,7 +56,9 @@ class GraphState(TypedDict):
     selected_features:  List[str]              # user-selected feature_ids
     feature_contexts:   Dict[str, FeatureContext]
     worker_results:     Dict[str, WorkerResult]
+    git_results:        Dict[str, Dict]        # pipeline git ops: {success, error, pr_url}
     validator_results:  Dict[str, ValidatorResult]
+    merge_results:      Dict[str, Dict]        # pipeline merge ops: {success, error}
 
     # Gate management
     gate_type:    Optional[str]   # set by human_gate node → interrupts graph
