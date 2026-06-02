@@ -2,6 +2,24 @@
 
 A pipeline that helps you build software projects. You describe the idea, the system plans it, implements features, and validates them. You stay in control at every key decision point.
 
+**Last updated: 2 June 2026**
+
+---
+
+## Changelog
+
+| Date | Change |
+|---|---|
+| 2 Jun 2026 | Separated git operations from worker — workers have zero git access |
+| 2 Jun 2026 | Added `git_node` and `merge_node` to LangGraph graph |
+| 2 Jun 2026 | Corrected execution order: worker → git → human gate → validator → merge |
+| 2 Jun 2026 | Added `gh-check` command for GitHub PR approval detection |
+| 2 Jun 2026 | Fixed Gemini 2.5 Flash: disabled extended thinking, added 503/429 retry, added response guard |
+| 2 Jun 2026 | Worker tools changed from bash+file to file_read+file_write+test_runner |
+| 2 Jun 2026 | Raised worker max_tokens from 4096 to 16384 |
+| 2 Jun 2026 | Enforced `develop` as base branch for all PRs; `main` ← `develop` is a human milestone decision |
+| 2 Jun 2026 | Docker test runner for CI commands; git runs on host via subprocess |
+
 ---
 
 ## Table of contents
@@ -11,38 +29,45 @@ A pipeline that helps you build software projects. You describe the idea, the sy
 3. [Setup](#setup)
 4. [First run — step by step](#first-run)
 5. [Commands reference](#commands-reference)
-6. [The five phases](#the-five-phases)
-7. [Contract files](#contract-files)
-8. [Human gates — what requires your input](#human-gates)
-9. [Project memory](#project-memory)
-10. [Docker environment](#docker-environment)
-11. [Model configuration](#model-configuration)
-12. [Troubleshooting](#troubleshooting)
-13. [File ownership — what you can and cannot edit](#file-ownership)
+6. [The execution graph](#the-execution-graph)
+7. [The six phases](#the-six-phases)
+8. [Separation of concerns — who does what](#separation-of-concerns)
+9. [Contract files](#contract-files)
+10. [Human gates — what requires your input](#human-gates)
+11. [Project memory](#project-memory)
+12. [Docker environment](#docker-environment)
+13. [Branch strategy](#branch-strategy)
+14. [Model configuration](#model-configuration)
+15. [Troubleshooting](#troubleshooting)
+16. [File ownership — what you can and cannot edit](#file-ownership)
 
 ---
 
 ## How it works
 
-The pipeline has three roles and three principles.
+The pipeline has three agent roles and one pipeline role.
 
-**Roles:**
-- **CTO orchestrator** — plans the project, generates contracts, decides which features to run and in what order. Uses Claude (or Gemini).
-- **Worker agents** — implement one feature each via the Claude API with tool use (bash + file read/write). Run inside Docker.
-- **Validator agents** — validate each feature against the validation contract using Gemini. Never read source code — only the milestone report.
+**Agent roles (AI):**
+- **CTO orchestrator** — plans the project, generates contracts, decides which features to run and in what order. Uses Claude or Gemini.
+- **Worker agents** — implement one feature each via the Claude API. Tools: `file_read`, `file_write`, `test_runner`. No git access.
+- **Validator agents** — validate each feature against the validation contract using Gemini. Never read source code. Never touch git.
+
+**Pipeline role (Python, no AI):**
+- **git_ops.py** — owns all version control: branch setup, commit, push, PR creation, merge. Called by `git_node` and `merge_node` in the graph. Workers and validators have zero git access.
 
 **Three principles:**
 - Planning is slow and careful. The CTO asks clarifying questions before producing anything.
-- Implementation is code-focused. Workers receive precise contracts and filtered project memory.
-- Validation is independent. A different model validates against a spec written before implementation began.
+- Implementation is code-focused and git-free. Workers write files and test them. The pipeline handles version control.
+- Validation is independent. A different model validates against a spec written before implementation began. It never reads code.
 
-**You interact with the system at four points only:**
-1. Filling in `doc0_project_brief.md` (your project description)
+**You interact with the system at five points only:**
+1. Filling in `doc0_project_brief.md`
 2. Answering CTO clarifying questions in the terminal
-3. Approving or rejecting gates (plan, contracts, PRs)
+3. Approving or rejecting gates (plan, contracts)
 4. Selecting which features to implement
+5. Reviewing and approving the PR on GitHub
 
-Everything else — contract generation, worker spawning, validation, memory extraction, DAG scheduling — is automatic.
+Everything else is automatic.
 
 ---
 
@@ -53,8 +78,9 @@ your-project/
 │
 │  ── Entry points ──────────────────────────────────────────────
 ├── run.py                     The only command you type
-├── graph.py                   LangGraph StateGraph (nodes + edges)
-├── feature_menu.py            CLI feature selector (used inside graph)
+├── graph.py                   LangGraph StateGraph (all nodes + edges)
+├── feature_menu.py            CLI feature selector (called by graph)
+├── git_ops.py                 All git/GitHub operations (no AI, pure Python)
 │
 │  ── Schemas ────────────────────────────────────────────────────
 ├── schemas/
@@ -70,8 +96,8 @@ your-project/
 │  ── Agents ─────────────────────────────────────────────────────
 ├── agents/
 │   ├── cto.py                 CTO: clarify, plan, contracts, spawn plan
-│   ├── worker.py              Worker: Claude API with bash/file tools
-│   └── validator.py           Validator: Gemini against doc3 test suite
+│   ├── worker.py              Worker: file_read / file_write / test_runner only
+│   └── validator.py           Validator: Gemini against doc3 — no git
 │
 │  ── Infrastructure ─────────────────────────────────────────────
 ├── memory/
@@ -79,7 +105,7 @@ your-project/
 ├── gates/
 │   └── state_store.py         Atomic read/write of project_state.json
 ├── docker/
-│   └── runner.py              Runs bash commands inside the test container
+│   └── runner.py              Runs test commands inside the Docker container
 │
 │  ── Contract documents ─────────────────────────────────────────
 ├── doc0_project_brief.md      YOU fill this in before starting
@@ -92,7 +118,7 @@ your-project/
 ├── CLAUDE.md                  Standing instructions for the worker agent
 ├── .claude/rules/
 │   ├── security.md            Security implementation rules
-│   ├── git.md                 Git and PR discipline
+│   ├── git.md                 Branch strategy and PR checklist
 │   └── milestone-report.md   How to fill doc4 correctly
 │
 │  ── Runtime files (auto-generated, do not edit) ────────────────
@@ -103,7 +129,7 @@ your-project/
 │   └── F-01-001_milestone.md
 │
 │  ── Docker ─────────────────────────────────────────────────────
-├── Dockerfile.test            Test runner image definition
+├── Dockerfile.test            Test runner image (Node 20 + Python 3 + audit tools)
 │
 │  ── Config ─────────────────────────────────────────────────────
 ├── requirements.txt           Python dependencies
@@ -115,7 +141,7 @@ your-project/
 
 ## Setup
 
-**Prerequisites:** Python 3.11+, Docker Desktop (or Docker Engine), `git`, `gh` CLI.
+**Prerequisites:** Python 3.11+, Docker Desktop (or Docker Engine), `git`, `gh` CLI authenticated to GitHub.
 
 ```bash
 # 1. Install Python dependencies
@@ -124,15 +150,15 @@ pip install -r requirements.txt
 # 2. Set up environment variables
 cp .env.example .env
 # Open .env and fill in:
-#   ANTHROPIC_API_KEY   — from console.anthropic.com
-#   GEMINI_API_KEY      — from aistudio.google.com
-#   GITHUB_TOKEN        — from github.com/settings/tokens (needs repo scope)
+#   ANTHROPIC_API_KEY  — from console.anthropic.com
+#   GEMINI_API_KEY     — from aistudio.google.com
+#   GITHUB_TOKEN       — from github.com/settings/tokens (needs repo + workflow scope)
 
 # 3. Build the Docker test image (once per machine)
 python run.py docker-build
 ```
 
-The Docker build takes 2-4 minutes the first time. It installs Node 20, Python 3, pip-audit, and the GitHub CLI inside the image.
+The Docker build takes 2–4 minutes the first time. It installs Node 20, npm, Python 3, pip-audit, and the GitHub CLI. The `GITHUB_TOKEN` is forwarded into the container when the pipeline opens PRs — it is never written to any file.
 
 ---
 
@@ -140,15 +166,15 @@ The Docker build takes 2-4 minutes the first time. It installs Node 20, Python 3
 
 ### Step 1 — fill in doc0
 
-Open `doc0_project_brief.md` and fill in every section. You don't need to be exhaustive — the CTO will ask follow-up questions. But the more specific you are, the fewer rounds it takes.
+Open `doc0_project_brief.md` and fill in every section. You don't need to be exhaustive — the CTO will ask follow-up questions. The more specific you are, the fewer rounds it takes.
 
-The important fields are:
-- **What we are building** — 3-10 sentences describing the product, who uses it, and the core problem it solves
+Key fields:
+- **What we are building** — 3–10 sentences: the product, who uses it, the problem it solves
 - **Tech stack** — list what you know; leave rows blank if undecided
 - **Hard constraints** — things that cannot change (compliance, deadlines, existing systems)
 - **Non-goals** — what this project explicitly will not do
 
-Do not touch the `Clarification log` or `Shared plan` sections — the CTO manages those.
+Do not touch `Clarification log` or `Shared plan` — the CTO manages those.
 
 ### Step 2 — start the pipeline
 
@@ -156,79 +182,61 @@ Do not touch the `Clarification log` or `Shared plan` sections — the CTO manag
 python run.py start
 ```
 
-The CTO reads your brief and begins asking clarifying questions. One question per round. Answer directly in the terminal.
+The CTO reads your brief and asks clarifying questions one at a time. Answer in the terminal.
 
 ```
 CTO (round 1):
-What authentication mechanism do you want to use — JWT, session-based, or a
-third-party provider like Auth0?
+What authentication mechanism do you want to use — JWT, session-based,
+or a third-party provider like Auth0?
 
 Your answer (Enter to skip): JWT with 15 minute expiry and refresh tokens
 ```
 
-Type `skip` if you want to move past a question. The CTO will flag it as an open assumption.
+Type `skip` or press Enter to move past a question. The CTO flags it as an open assumption.
 
 ### Step 3 — approve the plan
 
-When the CTO has enough information it writes a shared plan to `doc0_project_brief.md` and pauses:
+When the CTO has enough information it writes a shared plan and pauses:
 
 ```
 ── Gate: plan_approval ────────────────────────────────
 
 Plan ready.
 
-Summary: A REST API for task management using Node/Express with JWT auth,
-PostgreSQL for storage, and Docker for deployment. Security posture: PII
-limited to email and name, GDPR-compliant, no financial data.
-
+Summary: A REST API for task management using Node/Express with JWT auth ...
 First milestone: users can register, log in, and create tasks.
 
 Review doc0_project_brief.md then run:
   python run.py resume --decision approve
 ```
 
-Read the plan. If it looks right:
 ```bash
 python run.py resume --decision approve
-```
-
-If something needs changing:
-```bash
+# or
 python run.py resume --decision reject --note "auth should use sessions not JWT"
 ```
 
-The CTO revises and presents the plan again.
-
 ### Step 4 — approve the contracts
 
-After plan approval the CTO generates three contract files automatically and pauses again:
+After plan approval the CTO generates doc1, doc2, doc3 automatically and pauses again:
 
 ```
 ── Gate: contract_approval ────────────────────────────
 
-Contracts generated: 8 features across 2 milestones.
-
-Review doc1, doc2, and doc3 before approving.
-Ready features: ['F-01-001', 'F-01-002']
+8 features across 2 milestones.
+Review doc1, doc2, doc3 then:
+  python run.py resume --decision approve
 ```
 
-Open and read the three files:
-- `doc1_security_contract.md` — threat model, auth spec, security checklist
-- `doc2_features_contract.md` — feature blocks with acceptance criteria
-- `doc3_validation_contract.md` — test suites, one per feature
+Read all three files carefully. This is the most important gate — everything downstream depends on contract quality.
 
-Then approve or reject:
 ```bash
 python run.py resume --decision approve
-# or
-python run.py resume --decision reject --note "F-01-003 acceptance criteria are too vague"
 ```
-
-If rejected the CTO regenerates all three contracts addressing your note.
 
 ### Step 5 — select features
 
-After contract approval the feature menu appears:
+The feature menu appears:
 
 ```
 ── Feature selection ──────────────────────────
@@ -242,43 +250,57 @@ After contract approval the feature menu appears:
     [F-02-001] User profile         medium  → needs F-01-002
 
   Commands:
-    all              run all features
-    M-01             run all features in a milestone
-    F-01-001         run a specific feature
-    F-01-001,F-01-002  comma-separated list
-    skip F-01-003 all  all except specified
+    all                    run all features
+    M-01                   run all features in a milestone
+    F-01-001               run a specific feature
+    F-01-001,F-01-002      comma-separated list
+    skip F-01-003 all      all except specified
 
   Your selection:
 ```
 
-Type your selection. The CTO builds a spawn plan — deciding which features run in parallel and which wait for dependencies.
+Select what to implement. The CTO decides which features run in parallel based on the dependency graph.
 
-### Step 6 — workers run
+### Step 6 — workers implement, git commits, you review
 
-For each selected feature the worker agent:
-1. Reads `doc1_security_contract.md` and the feature block from `doc2`
-2. Creates a git branch (`feature/F-01-001-user-registration`)
-3. Implements the feature using bash and file tools inside Docker
-4. Runs install → lint → test → audit
-5. Files `reports/F-01-001_milestone.md`
-6. Opens a PR
+For each feature the pipeline:
 
-You do not need to do anything during this step. Watch the terminal for progress.
+1. **Sets up a git branch** from `develop` (`git_ops.py`, no AI)
+2. **Worker implements** — writes source files, runs tests via Docker, fills milestone report (no git access)
+3. **Pipeline commits and pushes** all files the worker wrote (`git_ops.py`)
+4. **Pipeline opens a PR** targeting `develop` with the milestone report as the PR body
+5. **Pipeline pauses** — you see the PR gate
 
-### Step 7 — validator runs
+```
+── Gate: pr_review ────────────────────────────
 
-After each worker completes, the validator reads the feature's test suite from `doc3` and the milestone report, then calls Gemini. It never reads source code.
+PR opened for [F-01-001] User registration
+URL: https://github.com/you/repo/pull/12
 
-If it passes:
-- Memory is updated with anything the worker discovered
-- The next blocked features become ready
-- The pipeline continues
+Review the PR diff on GitHub, then:
+  python run.py gh-check F-01-001
+  python run.py resume --decision approve
+```
 
-If it fails you see the specific test cases that failed and the pipeline stops for that feature. You can inspect the milestone report and requeue the feature.
+Go to GitHub. Review the diff. If it looks good, approve the PR there, then run:
 
-### Step 8 — done
+```bash
+python run.py gh-check F-01-001   # detects your GitHub approval
+python run.py resume --decision approve
+```
 
-When all selected features pass validation the pipeline prints a completion summary. You can then select the next batch or call the project complete.
+### Step 7 — validator runs, PR merges
+
+After your approval:
+
+1. **Validator** reads the doc3 test suite and the milestone report — never the source code
+2. If it passes: pipeline **merges the PR** into `develop` automatically
+3. Memory is updated with what the worker discovered
+4. Next unblocked features become ready
+
+### Step 8 — repeat or complete
+
+The pipeline loops back to the feature selection phase. Select the next batch or end the session.
 
 ---
 
@@ -288,7 +310,7 @@ When all selected features pass validation the pipeline prints a completion summ
 # One-time setup
 python run.py docker-build
 
-# Start a new project (requires doc0 to be filled in)
+# Begin a new project
 python run.py start
 
 # Continue after any gate or interruption
@@ -296,104 +318,169 @@ python run.py resume
 python run.py resume --decision approve
 python run.py resume --decision reject --note "your note here"
 
-# Check where the project is at any time
+# Detect GitHub PR approval and update pipeline state
+python run.py gh-check F-01-001
+
+# Check project state at any time
 python run.py status
 
-# Inspect project memory (what workers have learned)
+# Inspect project memory
 python run.py memory
 python run.py memory F-01-002
 ```
 
-`resume` with no `--decision` flag just continues the pipeline if no gate is pending. Safe to run any time.
+`gh-check` polls GitHub for the PR associated with a feature ID. If the PR is approved or merged, it writes `human_gate: approved` into the milestone report and marks the feature ready for validation. Run it after you approve the PR on GitHub, then run `resume`.
 
 ---
 
-## The five phases
+## The execution graph
 
-The pipeline moves through these phases in order. `project_state.json` always shows the current phase.
+The LangGraph graph has six nodes. Execution order per feature:
 
-| Phase | What happens | Gate? |
-|---|---|---|
-| `clarification` | CTO asks questions, you answer. Repeats until CTO has enough. | No |
-| `plan_review` | CTO writes the shared plan. You approve or reject. | **Yes** |
-| `contract_gen` | CTO generates doc1, doc2, doc3 automatically. | No |
-| `contract_review` | You read the three contracts and approve or reject. | **Yes** |
-| `feature_selection` | You choose which features to implement. | Interactive |
-| `implementation` | Workers implement, validators validate, memory grows. | Per PR |
-| `complete` | All selected features passed. | No |
+```
+cto_orchestrator
+      │
+      ├── worker_node        (Claude API: file_read / file_write / test_runner)
+      │        │
+      │   git_node           (Python: branch, commit, push, gh pr create)
+      │        │
+      │   human_gate         (PAUSE — you review the PR on GitHub)
+      │        │
+      │   validator_node     (Gemini API: reads doc3 + milestone report only)
+      │        │
+      │   merge_node         (Python: gh pr merge into develop)
+      │        │
+      └── cto_orchestrator   (loop: unlock next features, or complete)
+```
+
+Nodes that run AI: `cto_orchestrator`, `worker_node`, `validator_node`.
+Nodes that run Python only: `git_node`, `merge_node`, `human_gate`.
+
+The graph is checkpointed to `checkpoints.db` after every node. A crash or `Ctrl+C` at any point is safe — `python run.py resume` continues from the last completed node.
+
+---
+
+## The six phases
+
+`project_state.json` always shows the current phase.
+
+| Phase | What happens | Who acts | Gate? |
+|---|---|---|---|
+| `clarification` | CTO asks one question per round | CTO + you | No |
+| `plan_review` | CTO writes shared plan | You | **Yes** |
+| `contract_gen` | CTO generates doc1, doc2, doc3 | CTO | No |
+| `contract_review` | You read all three contracts | You | **Yes** |
+| `feature_selection` | You choose features; CTO builds spawn plan | You + CTO | Interactive |
+| `implementation` | worker → git → gate → validator → merge | All nodes | Per PR |
+| `complete` | All selected features passed and merged | — | No |
+
+---
+
+## Separation of concerns — who does what
+
+This is the most important design principle. Every role has strict boundaries.
+
+| Role | Reads | Writes | Git access |
+|---|---|---|---|
+| **CTO** (Claude/Gemini) | doc0, doc1–3 templates, memory.json | doc0 clarification log, doc1, doc2, doc3 | None |
+| **Worker** (Claude API) | doc1, doc2 feature block, doc4 template, memory | Source files, `reports/{fid}_milestone.md` | **None** |
+| **Validator** (Gemini) | doc3 test suite, `reports/{fid}_milestone.md` | validator_result in milestone report | **None** |
+| **git_node** (Python) | Source files on disk | git history, GitHub PR | **Full** |
+| **merge_node** (Python) | validator_result from milestone report | git history (merge) | **Full** |
+| **You** | Everything | doc0, .env, CLAUDE.md, rules | Full |
+
+Workers cannot lie about opening a PR — the PR is opened by `git_node` reading the actual files on disk. The validator cannot be influenced by the implementation — it only reads the milestone report. These are structural guarantees, not prompt-level instructions.
 
 ---
 
 ## Contract files
 
-The three contracts are templates in the repo that the CTO fills in at runtime. After the CTO runs, they contain real content for your project and should be committed to git.
+The three contracts start as templates in the repo. The CTO fills them in at runtime. After generation they should be committed to git.
 
-**doc1 — security contract.** Defines the threat model, authentication mechanism, data sensitivity level, PII fields, compliance requirements, rate limiting rules, audit events, and a security checklist. Workers must read this before touching any code. Validators check the checklist compliance in every milestone report.
+**doc1 — security contract.** Threat model, authentication mechanism, data sensitivity, PII fields, compliance requirements, rate limiting, audit events, security checklist. Workers must read this before touching any code. The validator checks the checklist in every milestone report.
 
-**doc2 — features contract.** One block per feature. Each block has: a unique feature ID (F-MM-NNN), title, milestone, priority, complexity, dependency list, acceptance criteria in Given/When/Then format, security constraint references into doc1, branch name, and done definition. This is what the CTO uses to build worker contexts and the feature menu.
+**doc2 — features contract.** One block per feature with: ID (F-MM-NNN), title, milestone, priority, complexity, `depends_on` list, acceptance criteria (Given/When/Then), security constraint references into doc1, branch name. The CTO uses this to build worker contexts, the feature menu, and the DAG execution plan.
 
-**doc3 — validation contract.** One test suite per feature. Each test case has: ID, type (unit/integration/security/regression), whether it blocks a merge, a plain-language description, given/when/expected conditions, and a `verified_via` field pointing to a specific field in the milestone report. The validator reads this against the milestone report — never against code.
+**doc3 — validation contract.** One test suite per feature. Each test case has: ID, type (`unit`/`integration`/`security`/`regression`), `blocking` flag, plain-language description, given/when/expected, and `verified_via` pointing to a specific field in the milestone report. The validator reads this only — never source code.
 
-**doc4 — milestone report template.** The worker copies this to `reports/{feature_id}_milestone.md` and fills it in. Contains: what was implemented, what was left undone, every command run with exit code, issues discovered, and the security checklist. The validator's entire judgment is based on this document.
+**doc4 — milestone report template.** The worker copies this to `reports/{feature_id}_milestone.md` and fills every field: what was implemented, what was left undone, every test phase run with exit code, issues discovered, security checklist status. This is the validator's only evidence source.
 
 ---
 
 ## Human gates
 
-Gates are deliberate pauses where the pipeline waits for your input. There are three types.
+Gates are deliberate pauses. The graph writes to `project_state.json` and stops. You resume with `python run.py resume`.
 
-**Plan approval.** The CTO has finished clarifying and written the shared plan. You read `doc0_project_brief.md` and either approve (pipeline moves to contract generation) or reject with a note (CTO revises).
+**Plan approval.** CTO has finished clarifying and written the shared plan into doc0. You read it and approve or reject with a note. Rejection triggers a revision.
 
-**Contract approval.** The CTO has generated doc1, doc2, doc3. You read all three and either approve (pipeline moves to feature selection) or reject with a note (CTO regenerates all three). Take this seriously — everything downstream depends on contract quality.
+**Contract approval.** CTO has generated doc1, doc2, doc3. You read all three. This is the highest-leverage gate — approve only when the acceptance criteria are specific enough to be testable and the security contract reflects your actual threat model.
 
-**Security escalation.** A validator found that `security_checklist_followed` was false or a security test failed. You acknowledge the issue before the pipeline continues. The feature is marked failed and you decide whether to requeue it.
+**PR review.** The pipeline has committed the worker's code, pushed, and opened a PR targeting `develop`. You review the diff on GitHub. After approving there, run `gh-check` then `resume`. The validator runs after your approval, not before — code review and spec validation are separate responsibilities.
 
-All gates write to `project_state.json` and pause the graph. The graph is resumable indefinitely — you can `Ctrl+C`, come back tomorrow, and run `python run.py resume` to continue from exactly where you left off.
+**Security escalation.** The validator found `security_checklist_followed: false` or a security test failed. You acknowledge before the pipeline continues.
+
+The graph is resumable indefinitely. You can stop and come back days later — `resume` continues from the exact node where it paused.
 
 ---
 
 ## Project memory
 
-`memory.json` grows as features complete. It has four sections:
+`memory.json` grows as features complete. It is append-only — nothing is ever deleted.
 
-**architecture_decisions** — key technical choices made during implementation (e.g. "chose JWT over sessions because the security contract requires stateless auth"). The CTO injects relevant decisions into the context of features that depend on earlier ones.
+**architecture_decisions** — technical choices with rationale (e.g. "chose JWT over sessions — required by sec contract §2.1"). Injected into worker contexts for features in the dependency chain.
 
-**failed_approaches** — things a worker tried that didn't work (e.g. "passport-local conflicts with express-session v2"). Every worker sees all failed approaches regardless of which feature they came from. This prevents workers from repeating mistakes.
+**failed_approaches** — approaches that didn't work (e.g. "passport-local conflicts with express-session v2 — downgraded to v1.17.3"). Every worker sees all failed approaches regardless of which feature they came from. This is the most valuable section — it prevents workers repeating the same mistakes.
 
-**discovered_constraints** — real-world limitations found during implementation that weren't in the contracts (e.g. "hosting provider does not support websockets — use SSE instead"). Injected into worker contexts for features that are affected.
+**discovered_constraints** — real-world limits found during implementation not in the contracts (e.g. "host does not support websockets — use SSE"). Injected into contexts of affected features.
 
-**open_risks** — unresolved high/critical issues. Always injected into every worker context until resolved.
+**open_risks** — unresolved high/critical issues. Always injected into every worker context.
 
-Memory is append-only. Nothing is ever deleted. You can inspect it with:
 ```bash
-python run.py memory               # full memory
-python run.py memory F-01-002     # filtered for a specific feature
+python run.py memory              # full memory
+python run.py memory F-01-002    # filtered for this feature
 ```
 
 ---
 
 ## Docker environment
 
-Workers run bash commands inside the `dev-assistant-test` container. The project directory is mounted at `/project` read-write.
+Workers use Docker for running test commands — not for git. The project directory is mounted at `/project`. The worker calls the `test_runner` tool (not raw bash), which runs commands inside the container via `docker/runner.py`.
 
-The image includes: Node 20, npm, Python 3, pip-audit, git, GitHub CLI.
+The image includes: Node 20, npm, Python 3, pip-audit, GitHub CLI.
+
+Git commands (branch, commit, push) run on the **host machine** via `git_ops.py` — they do not go through Docker.
 
 **Rebuild the image** if you update `Dockerfile.test`:
 ```bash
 python run.py docker-build
 ```
 
-**Use a custom image name** by setting `TEST_IMAGE` in `.env`:
+**Use a custom image name:**
 ```
-TEST_IMAGE=my-project-test
+TEST_IMAGE=my-project-test  # in .env
 ```
 
-**Debug a worker command manually** by running a shell in the container:
+**Debug test commands manually** in the same environment the worker uses:
 ```bash
 docker run --rm -it -v $(pwd):/project -w /project dev-assistant-test bash
 ```
 
-This is the exact environment the worker uses — useful for reproducing issues the worker reported in its milestone report.
+---
+
+## Branch strategy
+
+All feature branches are cut from `develop`, not `main`.
+
+```
+main        ← stable releases only (human decision after milestone)
+  └── develop   ← integration branch; all PRs target this
+        └── feature/F-01-001-user-login    ← created by git_ops.py
+        └── feature/F-01-002-user-auth     ← created by git_ops.py
+```
+
+The pipeline creates feature branches automatically during `feature_selection` phase. Workers never touch git. After validation passes, `merge_node` squash-merges the feature branch into `develop` and deletes the branch.
+
+The `develop` → `main` merge is always a human decision made after a full milestone completes. The pipeline never touches `main`.
 
 ---
 
@@ -401,46 +488,56 @@ This is the exact environment the worker uses — useful for reproducing issues 
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | required | Claude API key |
-| `GEMINI_API_KEY` | required | Gemini API key |
-| `GITHUB_TOKEN` | required | For `gh pr create` inside Docker |
+| `ANTHROPIC_API_KEY` | required | Claude API — CTO and worker |
+| `GEMINI_API_KEY` | required | Gemini API — validator |
+| `GITHUB_TOKEN` | required | GitHub CLI — PR creation and merge |
 | `CLAUDE_MODEL` | `claude-sonnet-4-20250514` | Model for CTO and workers |
 | `GEMINI_MODEL` | `gemini-2.5-flash` | Model for validators |
 | `CTO_MODEL` | `claude` | Provider for CTO phase (`claude` or `gemini`) |
 | `VALIDATOR_MODEL` | `gemini` | Provider for validation (`claude` or `gemini`) |
-| `TEST_IMAGE` | `dev-assistant-test` | Docker image name |
+| `TEST_IMAGE` | `dev-assistant-test` | Docker test image name |
 
-The validator intentionally uses a different provider from the worker. This prevents the same model from both writing and validating its own work.
+**Gemini 2.5 Flash specifics.** The router always passes `thinkingBudget: 0` to disable extended thinking for structured outputs, sets `maxOutputTokens: 8192` minimum, retries on 429/503 with 15s × attempt backoff (5 attempts), and guards against truncated responses. These are not optional — Gemini 2.5 Flash silently consumes its token budget on internal reasoning before writing the response, which causes truncation without these mitigations.
+
+The validator uses a different provider than the worker. This is structural — the same model cannot write and validate its own work.
 
 ---
 
 ## Troubleshooting
 
 **"Docker daemon is not running"**
-Start Docker Desktop (Mac/Windows) or run `sudo systemctl start docker` (Linux).
+Start Docker Desktop (Mac/Windows) or `sudo systemctl start docker` (Linux).
 
 **"Test image not found"**
 Run `python run.py docker-build` first.
 
 **"No checkpoint found. Run start first."**
-`project_state.json` or `checkpoints.db` is missing. Run `python run.py start`.
+`checkpoints.db` is missing or corrupt. Run `python run.py start`.
 
-**"Worker exceeded maximum turns"**
-The feature was too complex to complete in 40 API turns. Check `reports/{feature_id}_milestone.md` for what was partially done, then requeue the feature. Consider splitting it into smaller features in doc2.
+**Worker exceeded 40 turns**
+The feature was too complex for one session. Read `reports/{feature_id}_milestone.md` to see what was partially done. Split the feature in doc2 into smaller pieces, then requeue.
 
-**Worker filed a failing milestone report**
-Read `reports/{feature_id}_milestone.md` — specifically `left_undone` and `issues_discovered`. The validator will fail specific test cases and tell you which ones. You can edit the feature block in doc2 to clarify requirements, then requeue.
+**"git push failed"**
+The `git_node` couldn't push. Most common cause: the remote branch already exists with diverged history. Delete the remote branch manually (`git push origin --delete branch-name`) then run `resume`.
 
-**CTO generated contracts but a feature is missing from doc2**
-The contract consistency check should have caught this. Run `python run.py resume --decision reject --note "F-01-003 missing from doc2"` to trigger regeneration.
+**"PR open failed"**
+`GITHUB_TOKEN` is not set or lacks repo scope. Check `.env`, regenerate the token if needed. The PR can be opened manually on GitHub — the pipeline will continue when you run `gh-check`.
+
+**`gh-check` returns "no PR found"**
+The worker may not have filed the milestone report correctly, so `git_node` may not have opened the PR. Check `reports/` for the milestone file and check GitHub for a PR with the feature ID in the title. If missing, the feature can be requeued.
+
+**Validator always fails**
+The milestone report is incomplete or vague. The validator is strict — absence of evidence is a fail. Read the specific test cases that failed in `reports/{feature_id}_milestone.md` under `validator_result`. Fix the underlying implementation gap, update the report, and requeue.
+
+**CTO contracts are missing a feature**
+Run `python run.py resume --decision reject --note "F-01-003 missing from doc2"`. The CTO regenerates all three contracts.
 
 **Pipeline crashed mid-feature**
-Run `python run.py resume`. The LangGraph checkpoint means the pipeline resumes from the last completed node — the worker will restart from its beginning, which is safe because it creates a fresh branch.
+Run `python run.py resume`. LangGraph resumes from the last completed node. If it crashed during `git_node`, the branch may be in a partial state — check `git status` and clean up if needed before resuming.
 
 **Want to restart from scratch**
 ```bash
 rm project_state.json checkpoints.db memory.json
-# Optionally reset contracts to templates:
 git checkout doc1_security_contract.md doc2_features_contract.md doc3_validation_contract.md
 python run.py start
 ```
@@ -449,21 +546,21 @@ python run.py start
 
 ## File ownership — what you can and cannot edit
 
-| File | Owner | Can you edit it? |
+| File | Owner | Notes |
 |---|---|---|
-| `doc0_project_brief.md` | You | Yes — fill it in before starting |
-| `doc1_security_contract.md` | CTO (generated) | Read it. Request changes via gate rejection. |
-| `doc2_features_contract.md` | CTO (generated) | Read it. Request changes via gate rejection. |
-| `doc3_validation_contract.md` | CTO (generated) | Read it. Request changes via gate rejection. |
-| `doc4_milestone_report.md` | Template | Never edit — workers copy it |
-| `reports/*.md` | Workers | Read-only for you — the validator writes the result section |
-| `memory.json` | System | Never edit — append-only, managed by the pipeline |
-| `project_state.json` | System | Never edit — managed by gates/state_store.py |
-| `checkpoints.db` | LangGraph | Never edit |
-| `CLAUDE.md` | You | Yes — adjust worker standing instructions |
-| `.claude/rules/*.md` | You | Yes — adjust implementation rules |
-| `Dockerfile.test` | You | Yes — add tools your project needs |
-| `run.py`, `graph.py`, etc. | Pipeline | Do not edit unless you know what you're doing |
-| `.env` | You | Yes — keep it out of git |
-
-The three contracts (doc1, doc2, doc3) are owned by the CTO after the first generation but you have indirect control: reject the gate with a specific note and the CTO regenerates them. If you need a surgical change to a single feature block, you can edit doc2 manually and requeue just that feature — but be careful to keep doc2 and doc3 consistent (every feature in doc2 needs a test suite in doc3).
+| `doc0_project_brief.md` | You | Fill it in before starting. Clarification log and shared plan are CTO-managed. |
+| `doc1_security_contract.md` | CTO | Read it. Request changes via gate rejection. |
+| `doc2_features_contract.md` | CTO | Read it. Request changes via gate rejection. Manual edits possible but keep doc3 consistent. |
+| `doc3_validation_contract.md` | CTO | Read it. If you edit doc2, update matching suites here too. |
+| `doc4_milestone_report.md` | Template | Never edit directly — workers copy it per feature. |
+| `reports/*.md` | Workers + pipeline | Workers write the report body; pipeline writes `validator_result`. Read-only for you. |
+| `memory.json` | Pipeline | Never edit — append-only, managed after each milestone. |
+| `project_state.json` | Pipeline | Never edit — managed by `gates/state_store.py`. |
+| `checkpoints.db` | LangGraph | Never edit. |
+| `CLAUDE.md` | You | Adjust worker standing instructions. Changes take effect immediately on the next worker invocation. |
+| `.claude/rules/*.md` | You | Adjust implementation rules. Loaded by both Claude Code (automatic) and the API worker (injected). |
+| `git_ops.py` | Pipeline | Do not edit unless you understand the execution graph. |
+| `graph.py` | Pipeline | Do not edit unless you understand LangGraph. |
+| `Dockerfile.test` | You | Add tools your project needs. Rebuild with `python run.py docker-build`. |
+| `.env` | You | Never commit. Add to `.gitignore` if not already there. |
+| `run.py` | Pipeline | Entry point. Edit only if adding new top-level commands. |
