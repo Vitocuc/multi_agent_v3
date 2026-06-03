@@ -307,22 +307,12 @@ def git_node(state: GraphState) -> GraphState:
 
         ps = state_store.load(ROOT)
         if fid in ps.features:
-            ps.features[fid].status = FeatureStatus.IN_PROGRESS
-            ps.add_log("info", f"PR opened for {fid}: {pr_url}")
+            ps.features[fid].status = FeatureStatus.VALIDATING
+            ps.add_log("info", f"PR opened for {fid}: {pr_url} — running validator next")
             state_store.save(ps, ROOT)
 
-        # Set human gate — pipeline pauses here for PR review
-        return {**state,
-                "git_results": git_results,
-                "gate_type":   "pr_review",
-                "gate_feature": fid,
-                "gate_message": (
-                    f"PR opened for [{fid}] {title}\n"
-                    f"URL: {pr_url or 'check GitHub'}\n\n"
-                    "Review the PR diff on GitHub, then:\n"
-                    "  python run.py gh-check " + fid + "\n"
-                    "  python run.py resume --decision approve"
-                )}
+        # Validator runs next — human only reviews code that already passed the spec
+        return {**state, "git_results": git_results}
 
     return state
 
@@ -370,9 +360,10 @@ def validator_node(state: GraphState) -> GraphState:
         ps = state_store.load(ROOT)
         if fid in ps.features:
             if result["overall"] == "pass":
-                ps.features[fid].status = FeatureStatus.PASSED
+                ps.features[fid].status = FeatureStatus.IN_PROGRESS  # awaiting human gate
                 ps.features[fid].validator_result = "pass"
-                print(c(GREEN, f"  ✓ {fid} passed validation"))
+                print(c(GREEN, f"  ✓ {fid} passed validation — awaiting your PR review"))
+                # Extract memory now — useful context even before merge
                 mem   = mem_store.load(ROOT)
                 added = mem_store.append_from_milestone(wr["milestone_report"], fid, mem)
                 mem_store.save(mem, ROOT)
@@ -382,14 +373,35 @@ def validator_node(state: GraphState) -> GraphState:
             else:
                 ps.features[fid].status = FeatureStatus.FAILED
                 ps.features[fid].validator_result = "fail"
-                print(c(RED, f"  ✗ {fid} failed: {result['failures']}"))
+                print(c(RED, f"  ✗ {fid} failed validation — returning to worker"))
+                if result["failures"]:
+                    print(c(RED, f"    Failed: {result['failures']}"))
                 if result["escalations"]:
                     print(c(RED, f"    Security escalations: {result['escalations']}"))
             ps.add_log("info" if result["overall"] == "pass" else "warn",
                        f"Validator {fid}: {result['overall']}")
             state_store.save(ps, ROOT)
 
-        return {**state, "validator_results": {**val_results, fid: result}}
+        new_val_results = {**val_results, fid: result}
+
+        # If validation passed: set human gate for PR review
+        if result["overall"] == "pass":
+            ctx     = dict(state.get("feature_contexts", {}) or {}).get(fid, {})
+            pr_url  = dict(state.get("git_results", {}) or {}).get(fid, {}).get("pr_url", "")
+            return {**state,
+                    "validator_results": new_val_results,
+                    "gate_type":    "pr_review",
+                    "gate_feature": fid,
+                    "gate_message": (
+                        f"[{fid}] {ctx.get('title', '')} passed validation.\n"
+                        f"PR: {pr_url or 'check GitHub'}\n\n"
+                        "The code passed all spec tests. Now review the diff on GitHub.\n"
+                        "Approve the PR there, then run:\n"
+                        f"  python run.py gh-check {fid}\n"
+                        "  python run.py resume --decision approve"
+                    )}
+
+        return {**state, "validator_results": new_val_results}
 
     return state
 
@@ -453,23 +465,34 @@ def route_from_cto(state: GraphState) -> str:
 
 
 def _route_impl(state: GraphState) -> str:
+    """
+    Correct execution order per feature:
+      worker → git → validator → human_gate → merge
+    Validator runs before human review — you only review code that passed the spec.
+    """
     contexts       = state.get("feature_contexts", {}) or {}
     worker_results = state.get("worker_results",   {}) or {}
     git_results    = state.get("git_results",      {}) or {}
     val_results    = state.get("validator_results",{}) or {}
     merge_results  = state.get("merge_results",    {}) or {}
 
-    # Need merge?
+    # Need merge? (after human gate approved)
     for fid in val_results:
-        if fid not in merge_results:
-            return "merge"
+        if fid not in merge_results and val_results[fid].get("overall") == "pass":
+            # Only merge if human gate has been cleared (no gate pending)
+            if not state.get("gate_type"):
+                return "merge"
 
-    # Need validation? (only after git_results confirm PR was opened)
+    # Need human gate? (validator passed, gate set — will trigger interrupt)
+    if state.get("gate_type") == "pr_review":
+        return "human_gate"
+
+    # Need validation? (after git pushed and PR opened)
     for fid in git_results:
         if fid not in val_results and git_results[fid].get("success"):
             return "validator"
 
-    # Need git commit+PR?
+    # Need git commit+PR? (after worker done)
     for fid in worker_results:
         if fid not in git_results:
             return "git"
@@ -486,14 +509,14 @@ def route_after_worker(state: GraphState) -> str:
     return "git"
 
 def route_after_git(state: GraphState) -> str:
-    gate = state.get("gate_type")
-    return "human_gate" if gate else "validator"
-
-def route_after_gate(state: GraphState) -> str:
-    return "validator"
+    return "validator"   # validator always fires after git — no human gate here
 
 def route_after_validator(state: GraphState) -> str:
-    return "merge"
+    gate = state.get("gate_type")
+    return "human_gate" if gate else "cto_orchestrator"  # gate set = pass, no gate = fail
+
+def route_after_gate(state: GraphState) -> str:
+    return "merge"       # human approved → merge immediately
 
 def route_after_merge(state: GraphState) -> str:
     return "cto_orchestrator"
@@ -524,12 +547,12 @@ def build_graph(db_path: str = "checkpoints.db") -> StateGraph:
         "human_gate":       "human_gate",
         END:                END,
     })
-    builder.add_conditional_edges("worker",     route_after_worker,    {"git":              "git"})
-    builder.add_conditional_edges("git",        route_after_git,       {"human_gate":       "human_gate",
-                                                                         "validator":        "validator"})
-    builder.add_conditional_edges("human_gate", route_after_gate,      {"validator":        "validator"})
-    builder.add_conditional_edges("validator",  route_after_validator,  {"merge":            "merge"})
-    builder.add_conditional_edges("merge",      route_after_merge,      {"cto_orchestrator": "cto_orchestrator"})
+    builder.add_conditional_edges("worker",    route_after_worker,   {"git":              "git"})
+    builder.add_conditional_edges("git",       route_after_git,      {"validator":        "validator"})
+    builder.add_conditional_edges("validator", route_after_validator, {"human_gate":       "human_gate",
+                                                                        "cto_orchestrator": "cto_orchestrator"})
+    builder.add_conditional_edges("human_gate", route_after_gate,    {"merge":            "merge"})
+    builder.add_conditional_edges("merge",     route_after_merge,    {"cto_orchestrator": "cto_orchestrator"})
 
     checkpointer = SqliteSaver.from_conn_string(db_path)
     return builder.compile(

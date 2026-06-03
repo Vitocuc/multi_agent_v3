@@ -10,6 +10,7 @@ A pipeline that helps you build software projects. You describe the idea, the sy
 
 | Date | Change |
 |---|---|
+| 3 Jun 2026 | Corrected execution order: validator now runs before human gate, not after |
 | 2 Jun 2026 | Separated git operations from worker — workers have zero git access |
 | 2 Jun 2026 | Added `git_node` and `merge_node` to LangGraph graph |
 | 2 Jun 2026 | Corrected execution order: worker → git → human gate → validator → merge |
@@ -269,15 +270,18 @@ For each feature the pipeline:
 2. **Worker implements** — writes source files, runs tests via Docker, fills milestone report (no git access)
 3. **Pipeline commits and pushes** all files the worker wrote (`git_ops.py`)
 4. **Pipeline opens a PR** targeting `develop` with the milestone report as the PR body
-5. **Pipeline pauses** — you see the PR gate
+5. **Validator runs** — Gemini checks the doc3 test suite against the milestone report
+6. **If validation passes — pipeline pauses** for your PR review
+7. **If validation fails — pipeline routes back to the worker** — you never see the PR
 
 ```
 ── Gate: pr_review ────────────────────────────
 
-PR opened for [F-01-001] User registration
-URL: https://github.com/you/repo/pull/12
+[F-01-001] User registration passed validation.
+PR: https://github.com/you/repo/pull/12
 
-Review the PR diff on GitHub, then:
+The code passed all spec tests. Now review the diff on GitHub.
+Approve the PR there, then run:
   python run.py gh-check F-01-001
   python run.py resume --decision approve
 ```
@@ -342,16 +346,18 @@ cto_orchestrator
       │
       ├── worker_node        (Claude API: file_read / file_write / test_runner)
       │        │
-      │   git_node           (Python: branch, commit, push, gh pr create)
-      │        │
-      │   human_gate         (PAUSE — you review the PR on GitHub)
+      │   git_node           (Python: commit, push, gh pr create)
       │        │
       │   validator_node     (Gemini API: reads doc3 + milestone report only)
+      │        │
+      │   human_gate         (PAUSE — you review code that already passed spec)
       │        │
       │   merge_node         (Python: gh pr merge into develop)
       │        │
       └── cto_orchestrator   (loop: unlock next features, or complete)
 ```
+
+Validator runs before human review by design — you only spend time reviewing code that already passed the spec tests. If validation fails, the pipeline routes back to the worker without ever showing you the PR.
 
 Nodes that run AI: `cto_orchestrator`, `worker_node`, `validator_node`.
 Nodes that run Python only: `git_node`, `merge_node`, `human_gate`.
@@ -415,7 +421,9 @@ Gates are deliberate pauses. The graph writes to `project_state.json` and stops.
 
 **Contract approval.** CTO has generated doc1, doc2, doc3. You read all three. This is the highest-leverage gate — approve only when the acceptance criteria are specific enough to be testable and the security contract reflects your actual threat model.
 
-**PR review.** The pipeline has committed the worker's code, pushed, and opened a PR targeting `develop`. You review the diff on GitHub. After approving there, run `gh-check` then `resume`. The validator runs after your approval, not before — code review and spec validation are separate responsibilities.
+**PR review.** The validator has already run and passed before you see this gate. The pipeline committed the worker's code, pushed, opened the PR, ran Gemini validation against the spec — and only then pauses for your review. You review code that is already spec-compliant. After approving on GitHub, run `gh-check` then `resume` to trigger the merge.
+
+If validation fails, the pipeline routes back to the worker and you never see the PR — saving you from reviewing code that would not pass anyway.
 
 **Security escalation.** The validator found `security_checklist_followed: false` or a security test failed. You acknowledge before the pipeline continues.
 
