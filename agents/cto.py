@@ -34,7 +34,12 @@ _CLARIFY_SYS = _BASE + (
 
 _PLAN_SYS = _BASE + (
     "\nTask: write a complete shared plan. All tech_stack fields must be filled. "
-    "No TBD. Be specific enough that a developer can start immediately."
+    "No TBD. Be specific enough that a developer can start immediately. "
+    "You must also decide app_run_command (the exact shell command that starts "
+    "the application in development mode, e.g. 'npm run dev' or "
+    "'uvicorn main:app --host 0.0.0.0 --port 8000') and app_port (the integer "
+    "port it listens on) — the validator runs this command in Docker and tests "
+    "against it, so it must be concrete and correct for the chosen tech stack."
 )
 
 _CONTRACT_SYS = _BASE + (
@@ -77,7 +82,11 @@ def write_plan(history: List[Dict], provider: str, root: Path = ROOT) -> SharedP
     msgs = [user_msg(
         f"Project brief + clarification log:\n\n{doc0}\n\n"
         "Return a SharedPlan JSON: {summary, key_decisions, open_assumptions, "
-        "tech_stack, scope_boundary, first_milestone}."
+        "tech_stack, scope_boundary, first_milestone, app_run_command, app_port}. "
+        "app_run_command: exact shell command to start the app in dev mode "
+        "(e.g. 'npm run dev', 'uvicorn main:app --host 0.0.0.0 --port 8000', "
+        "'python manage.py runserver 0.0.0.0:8000'). "
+        "app_port: integer port the app listens on, matching app_run_command."
     )] + history
     plan = call_structured(provider, msgs, _PLAN_SYS, SharedPlan, label="SharedPlan")
     _write_plan_to_doc0(root, plan)
@@ -89,7 +98,8 @@ def revise_plan(history: List[Dict], rejection_note: str,
     doc0 = (root / "doc0_project_brief.md").read_text()
     msgs = [user_msg(
         f"Brief:\n\n{doc0}\n\nRejection note: {rejection_note}\n\n"
-        "Revise the SharedPlan to address the feedback. Return SharedPlan JSON."
+        "Revise the SharedPlan to address the feedback. Return SharedPlan JSON "
+        "with all fields including app_run_command and app_port."
     )] + history
     plan = call_structured(provider, msgs, _PLAN_SYS, SharedPlan, label="SharedPlan (revision)")
     _write_plan_to_doc0(root, plan)
@@ -160,10 +170,19 @@ def generate_contracts(provider: str, root: Path = ROOT) -> Dict:
         "- Every feature in doc2 must have a Suite block (suite_id = feature_id)\n"
         "- Every acceptance criterion must appear as a test case\n"
         "- Every suite must include at least one security test (type: security)\n"
-        "- verified_via: name the specific field in the milestone report\n"
-        "  (e.g. milestone_report.security_checklist_followed, "
-        "milestone_report.commands_run[*].exit_code)\n"
-        "- Always include SEC-GLOBAL-01, SEC-GLOBAL-02, SEC-GLOBAL-03\n"
+        "- CRITICAL: for feature-specific tests, given/when/expected must be written "
+        "at the INTERFACE level (HTTP method + path + request body/headers, and "
+        "expected status code + response body shape) — concrete enough that someone "
+        "who has NEVER seen the source code could write an automated test from this "
+        "description alone, calling the running application over HTTP\n"
+        "- verified_via for feature-specific tests: 'executable_test' "
+        "(a test generator will turn given/when/expected into real pytest code "
+        "and run it against the live application)\n"
+        "- verified_via for the three global security tests stays milestone-report-based "
+        "(e.g. milestone_report.security_checklist_followed, "
+        "milestone_report.commands_run[*].exit_code) — these are checked deterministically, "
+        "not via HTTP\n"
+        "- Always include SEC-GLOBAL-01, SEC-GLOBAL-02, SEC-GLOBAL-03 exactly as in the template\n"
         "- human_gate_required: true for auth, PII, payment features\n"
         "- Reproduce the exact template structure below, filled for this project\n\n"
         f"TEMPLATE:\n\n{tpl3}\n\n"
@@ -284,9 +303,29 @@ def _write_plan_to_doc0(root: Path, plan: SharedPlan) -> None:
         "".join(f"  {k}: {v}\n" for k, v in plan.tech_stack.items()) +
         f'\nscope_boundary: "{plan.scope_boundary}"\n'
         f'first_milestone: "{plan.first_milestone}"\n'
+        f'app_run_command: "{plan.app_run_command}"\n'
+        f"app_port: {plan.app_port}\n"
     )
     text = re.sub(r"shared_plan_approved: false.*$", block, text, flags=re.DOTALL)
     doc0.write_text(text)
+
+
+def get_app_config(root: Path = ROOT) -> Dict[str, object]:
+    """
+    Read app_run_command and app_port from the approved shared plan in doc0.
+    Used by the validator to start the application for executable tests.
+    Returns {"run_command": "", "port": 0} if not found.
+    """
+    doc0 = root / "doc0_project_brief.md"
+    if not doc0.exists():
+        return {"run_command": "", "port": 0}
+    text = doc0.read_text()
+    cmd_m  = re.search(r'app_run_command:\s*"(.*?)"', text)
+    port_m = re.search(r"app_port:\s*(\d+)", text)
+    return {
+        "run_command": cmd_m.group(1) if cmd_m else "",
+        "port":        int(port_m.group(1)) if port_m else 0,
+    }
 
 
 def _save(root: Path, filename: str, content: str) -> None:

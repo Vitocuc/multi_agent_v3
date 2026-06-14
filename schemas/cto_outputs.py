@@ -35,6 +35,8 @@ class SharedPlan(BaseModel):
     tech_stack:       Dict[str, str]
     scope_boundary:   str
     first_milestone:  str
+    app_run_command:  str
+    app_port:         int
 
     @field_validator("tech_stack")
     @classmethod
@@ -42,6 +44,24 @@ class SharedPlan(BaseModel):
         blanks = [k for k, val in v.items() if not val.strip()]
         if blanks:
             raise ValueError(f"tech_stack has blank entries: {blanks}")
+        return v
+
+    @field_validator("app_run_command")
+    @classmethod
+    def app_run_command_set(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError(
+                "app_run_command must specify how to start the application "
+                "(e.g. 'npm run dev', 'uvicorn main:app --host 0.0.0.0 --port 8000') "
+                "— the validator runs this in Docker to test the implementation."
+            )
+        return v
+
+    @field_validator("app_port")
+    @classmethod
+    def app_port_valid(cls, v: int) -> int:
+        if not (1 <= v <= 65535):
+            raise ValueError(f"app_port must be between 1 and 65535, got {v}")
         return v
 
 

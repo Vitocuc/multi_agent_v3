@@ -47,6 +47,10 @@ human_gate_required:    false         # true for high-risk or architectural feat
 
 **Test cases**
 
+Feature-specific test cases must be written at the INTERFACE level — concrete
+HTTP method, path, request body, and expected status/response — so they can be
+turned into executable tests by someone who has never seen the implementation.
+
 ```yaml
 - test_id:      F-01-001-T01
   type:         unit
@@ -54,42 +58,45 @@ human_gate_required:    false         # true for high-risk or architectural feat
   description:  >
     [Plain-language description of what is being verified.
      Written before implementation — pure spec, no code.]
-  given:        "[system/world state before the action]"
-  when:         "[action taken by user or system]"
-  expected:     "[observable outcome — what should be true after]"
-  verified_via: milestone_report   # validator checks milestone report fields
+  given:        "[preconditions — e.g. 'no user exists with email a@b.com']"
+  when:         "[concrete HTTP call — e.g. 'POST /api/users with body {email, password}']"
+  expected:     "[concrete response — e.g. '201 Created, body contains id and email, no password field']"
+  verified_via: executable_test    # a pytest file is generated from this spec and run against the live app
 
 - test_id:      F-01-001-T02
   type:         integration
   blocking:     true
   description:  >
-    [Integration test: two or more components working together]
+    [Integration test: two or more components working together,
+     described as a sequence of HTTP calls]
   given:        ""
   when:         ""
   expected:     ""
-  verified_via: milestone_report
+  verified_via: executable_test
 
 - test_id:      F-01-001-T03
   type:         security
   blocking:     true
   description:  >
-    All inputs to this feature are validated before processing.
-    No secrets appear in logs. Auth is enforced on all protected routes.
-  given:        "Feature F-01-001 is implemented"
-  when:         "Validator reads security_checklist_followed field in milestone report"
-  expected:     "security_checklist_followed: true and all checklist items checked"
-  verified_via: milestone_report.security_checklist_followed
+    [Security behaviour testable via HTTP — e.g. accessing a protected
+     route without auth returns 401, invalid input returns 400 not 500]
+  given:        "[e.g. 'no Authorization header is provided']"
+  when:         "[e.g. 'GET /api/profile is called']"
+  expected:     "[e.g. '401 Unauthorized, no internal error details in body']"
+  verified_via: executable_test
 
 - test_id:      F-01-001-T04
   type:         regression
   blocking:     false
   description:  >
     [Check that this feature does not break any previously passing features.
-     Add specific regressions discovered during earlier milestones here.]
+     Add specific regressions discovered during earlier milestones here.
+     Write as an HTTP-level check if testable, otherwise mark verified_via
+     as milestone_report and describe what to look for in commands_run.]
   given:        ""
   when:         ""
   expected:     ""
-  verified_via: milestone_report.commands_run
+  verified_via: executable_test
 ```
 
 ---
@@ -101,7 +108,9 @@ human_gate_required:    false         # true for high-risk or architectural feat
 ---
 
 ## Cross-feature security tests
-<!-- These run after every milestone, regardless of which feature was implemented. -->
+<!-- These run after every milestone, regardless of which feature was implemented.
+     These three are checked by deterministic Python code reading the milestone
+     report — NOT compiled into executable tests like the feature suites above. -->
 
 ```yaml
 - test_id:      SEC-GLOBAL-01

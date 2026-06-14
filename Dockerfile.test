@@ -1,13 +1,14 @@
 # Dockerfile.test
-# Pipeline test runner — used by the worker node to execute commands
-# in a clean, reproducible environment.
+# Pipeline test runner — used by:
+#   - the worker node's test_runner tool (install, lint, test, audit)
+#   - the validator: runs the application under test, and runs
+#     Gemini-generated pytest files against it over HTTP
 #
 # Build:  docker build -f Dockerfile.test -t dev-assistant-test .
 # Or:     python run.py docker-build
 #
-# The worker mounts the project directory at /project and runs commands there.
-# This image is NOT the application's production image — it is the CI environment
-# for running lint, tests, and dependency audits during feature implementation.
+# The project directory is mounted at /project. This image is NOT the
+# application's production image — it is the shared CI/test environment.
 
 FROM node:20-slim AS base
 
@@ -22,8 +23,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
     && rm -rf /var/lib/apt/lists/*
 
-# pip tools for Python projects
-RUN pip3 install --break-system-packages pip-audit
+# pip-audit for dependency audits, pytest + requests for validator-generated tests
+RUN pip3 install --break-system-packages pip-audit pytest requests
 
 # GitHub CLI — used by worker to open PRs
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \

@@ -52,6 +52,24 @@ Never implement work that belongs to another feature_id.
 
 ---
 
+## Your implementation must be runnable
+
+`doc0_project_brief.md` specifies `app_run_command` and `app_port` in the shared
+plan — the exact command and port the application uses in development.
+
+The validator starts your implementation with this exact command and runs
+generated tests against `http://localhost:{app_port}`. If the app does not
+start cleanly with `app_run_command`, every test for this feature fails
+regardless of code correctness.
+
+Before filing your milestone report, verify via `test_runner` that
+`app_run_command` actually starts the application and it responds on
+`app_port`. If your implementation needs environment variables to start,
+document them in `.env.example` and ensure sensible defaults exist for
+the test environment.
+
+---
+
 ## Branches, commits, and PRs — not your job
 
 You do not run git commands. You do not commit. You do not open PRs.

@@ -2,7 +2,7 @@
 
 A pipeline that helps you build software projects. You describe the idea, the system plans it, implements features, and validates them. You stay in control at every key decision point.
 
-**Last updated: 2 June 2026**
+**Last updated: 14 June 2026**
 
 ---
 
@@ -10,6 +10,11 @@ A pipeline that helps you build software projects. You describe the idea, the sy
 
 | Date | Change |
 |---|---|
+| 14 Jun 2026 | Validator rewritten: generates executable pytest from doc3, runs it against the live app — real exit codes, not LLM opinion |
+| 14 Jun 2026 | Added `app_run_command` / `app_port` to the shared plan — CTO decides how to start the app for testing |
+| 14 Jun 2026 | Global security checks (SEC-GLOBAL-01/02/03) are now deterministic Python, not LLM-judged |
+| 14 Jun 2026 | `docker/runner.py` gains app lifecycle: shared network, `start_app`/`wait_for_app`/`stop_app` |
+| 14 Jun 2026 | `Dockerfile.test` adds `pytest` + `requests` for validator-generated tests |
 | 3 Jun 2026 | Corrected execution order: validator now runs before human gate, not after |
 | 2 Jun 2026 | Separated git operations from worker — workers have zero git access |
 | 2 Jun 2026 | Added `git_node` and `merge_node` to LangGraph graph |
@@ -32,15 +37,16 @@ A pipeline that helps you build software projects. You describe the idea, the sy
 5. [Commands reference](#commands-reference)
 6. [The execution graph](#the-execution-graph)
 7. [The six phases](#the-six-phases)
-8. [Separation of concerns — who does what](#separation-of-concerns)
+8. [Separation of concerns — who does what](#separation-of-concerns--who-does-what)
 9. [Contract files](#contract-files)
 10. [Human gates — what requires your input](#human-gates)
 11. [Project memory](#project-memory)
 12. [Docker environment](#docker-environment)
-13. [Branch strategy](#branch-strategy)
-14. [Model configuration](#model-configuration)
-15. [Troubleshooting](#troubleshooting)
-16. [File ownership — what you can and cannot edit](#file-ownership)
+13. [How the validator works](#how-the-validator-works)
+14. [Branch strategy](#branch-strategy)
+15. [Model configuration](#model-configuration)
+16. [Troubleshooting](#troubleshooting)
+17. [File ownership — what you can and cannot edit](#file-ownership--what-you-can-and-cannot-edit)
 
 ---
 
@@ -51,7 +57,7 @@ The pipeline has three agent roles and one pipeline role.
 **Agent roles (AI):**
 - **CTO orchestrator** — plans the project, generates contracts, decides which features to run and in what order. Uses Claude or Gemini.
 - **Worker agents** — implement one feature each via the Claude API. Tools: `file_read`, `file_write`, `test_runner`. No git access.
-- **Validator agents** — validate each feature against the validation contract using Gemini. Never read source code. Never touch git.
+- **Validator agents** — generate executable tests from the doc3 spec (Gemini, never sees source code), run them against the live application in Docker, and run deterministic security checks on the milestone report. Never touch git.
 
 **Pipeline role (Python, no AI):**
 - **git_ops.py** — owns all version control: branch setup, commit, push, PR creation, merge. Called by `git_node` and `merge_node` in the graph. Workers and validators have zero git access.
@@ -128,9 +134,11 @@ your-project/
 ├── checkpoints.db             LangGraph checkpoints (SQLite)
 ├── reports/                   Milestone reports filed by workers
 │   └── F-01-001_milestone.md
+├── validation/                Validator-generated pytest files (commit these)
+│   └── F-01-001_test.py
 │
 │  ── Docker ─────────────────────────────────────────────────────
-├── Dockerfile.test            Test runner image (Node 20 + Python 3 + audit tools)
+├── Dockerfile.test            Test runner image (Node 20 + Python 3 + pytest + requests)
 │
 │  ── Config ─────────────────────────────────────────────────────
 ├── requirements.txt           Python dependencies
@@ -211,10 +219,18 @@ Review doc0_project_brief.md then run:
   python run.py resume --decision approve
 ```
 
+The shared plan now also includes `app_run_command` and `app_port` — the exact
+command and port the CTO decided the application will use (e.g. `npm run dev`
+on port `3000`). **Check these carefully** — the validator runs this command
+verbatim in Docker to start the app and test it. If it's wrong for your stack,
+reject with a note.
+
 ```bash
 python run.py resume --decision approve
 # or
 python run.py resume --decision reject --note "auth should use sessions not JWT"
+# or
+python run.py resume --decision reject --note "app_run_command should be 'python manage.py runserver 0.0.0.0:8000'"
 ```
 
 ### Step 4 — approve the contracts
@@ -270,7 +286,7 @@ For each feature the pipeline:
 2. **Worker implements** — writes source files, runs tests via Docker, fills milestone report (no git access)
 3. **Pipeline commits and pushes** all files the worker wrote (`git_ops.py`)
 4. **Pipeline opens a PR** targeting `develop` with the milestone report as the PR body
-5. **Validator runs** — Gemini checks the doc3 test suite against the milestone report
+5. **Validator runs** — generates a pytest file from doc3, starts the app in Docker, runs the tests against it for real, and runs deterministic security checks on the milestone report
 6. **If validation passes — pipeline pauses** for your PR review
 7. **If validation fails — pipeline routes back to the worker** — you never see the PR
 
@@ -295,12 +311,18 @@ python run.py resume --decision approve
 
 ### Step 7 — validator runs, PR merges
 
-After your approval:
+The validator already ran before this gate (Step 6.5). To recap what happened:
 
-1. **Validator** reads the doc3 test suite and the milestone report — never the source code
-2. If it passes: pipeline **merges the PR** into `develop` automatically
-3. Memory is updated with what the worker discovered
-4. Next unblocked features become ready
+1. **Validator** read only the doc3 test suite, generated a pytest file from it (Gemini — never sees source code), started the app in Docker with `app_run_command`, and ran the generated tests against it for real
+2. Each doc3 `test_id` got a real PASSED/FAILED/ERROR/SKIPPED result from pytest — not an LLM opinion
+3. The three global security checks ran as pure Python against the milestone report
+4. `overall: pass` only because every blocking test_id actually passed and the security checks were clean
+
+After your PR approval:
+
+5. Pipeline **merges the PR** into `develop` automatically
+6. Memory is updated with what the worker discovered
+7. Next unblocked features become ready
 
 ### Step 8 — repeat or complete
 
@@ -348,7 +370,8 @@ cto_orchestrator
       │        │
       │   git_node           (Python: commit, push, gh pr create)
       │        │
-      │   validator_node     (Gemini API: reads doc3 + milestone report only)
+      │   validator_node     (Gemini: generates pytest from doc3, runs it
+      │        │               against the live app in Docker — real results)
       │        │
       │   human_gate         (PAUSE — you review code that already passed spec)
       │        │
@@ -357,9 +380,9 @@ cto_orchestrator
       └── cto_orchestrator   (loop: unlock next features, or complete)
 ```
 
-Validator runs before human review by design — you only spend time reviewing code that already passed the spec tests. If validation fails, the pipeline routes back to the worker without ever showing you the PR.
+Validator runs before human review by design — you only spend time reviewing code that already passed real, executed tests. If validation fails, the pipeline routes back to the worker without ever showing you the PR.
 
-Nodes that run AI: `cto_orchestrator`, `worker_node`, `validator_node`.
+Nodes that run AI: `cto_orchestrator`, `worker_node`, `validator_node` (code generation only — the test execution itself is Python + Docker, not AI).
 Nodes that run Python only: `git_node`, `merge_node`, `human_gate`.
 
 The graph is checkpointed to `checkpoints.db` after every node. A crash or `Ctrl+C` at any point is safe — `python run.py resume` continues from the last completed node.
@@ -390,12 +413,14 @@ This is the most important design principle. Every role has strict boundaries.
 |---|---|---|---|
 | **CTO** (Claude/Gemini) | doc0, doc1–3 templates, memory.json | doc0 clarification log, doc1, doc2, doc3 | None |
 | **Worker** (Claude API) | doc1, doc2 feature block, doc4 template, memory | Source files, `reports/{fid}_milestone.md` | **None** |
-| **Validator** (Gemini) | doc3 test suite, `reports/{fid}_milestone.md` | validator_result in milestone report | **None** |
+| **Validator** (Gemini + Python) | doc3 test suite **only** (never source code) | `validation/{fid}_test.py`, validator_result in milestone report | **None** |
 | **git_node** (Python) | Source files on disk | git history, GitHub PR | **Full** |
 | **merge_node** (Python) | validator_result from milestone report | git history (merge) | **Full** |
 | **You** | Everything | doc0, .env, CLAUDE.md, rules | Full |
 
-Workers cannot lie about opening a PR — the PR is opened by `git_node` reading the actual files on disk. The validator cannot be influenced by the implementation — it only reads the milestone report. These are structural guarantees, not prompt-level instructions.
+Workers cannot lie about opening a PR — the PR is opened by `git_node` reading the actual files on disk. The validator cannot be influenced by the implementation — Gemini only ever sees the doc3 spec, and the pass/fail comes from a real pytest exit code against the running app, not from reading the worker's claims. These are structural guarantees, not prompt-level instructions.
+
+The validator does briefly run a Docker container (the application under test) — this is execution, not git, and the container is removed immediately after the test run regardless of outcome.
 
 ---
 
@@ -403,13 +428,13 @@ Workers cannot lie about opening a PR — the PR is opened by `git_node` reading
 
 The three contracts start as templates in the repo. The CTO fills them in at runtime. After generation they should be committed to git.
 
-**doc1 — security contract.** Threat model, authentication mechanism, data sensitivity, PII fields, compliance requirements, rate limiting, audit events, security checklist. Workers must read this before touching any code. The validator checks the checklist in every milestone report.
+**doc1 — security contract.** Threat model, authentication mechanism, data sensitivity, PII fields, compliance requirements, rate limiting, audit events, security checklist. Workers must read this before touching any code. The validator's deterministic checks read the checklist status from every milestone report.
 
 **doc2 — features contract.** One block per feature with: ID (F-MM-NNN), title, milestone, priority, complexity, `depends_on` list, acceptance criteria (Given/When/Then), security constraint references into doc1, branch name. The CTO uses this to build worker contexts, the feature menu, and the DAG execution plan.
 
-**doc3 — validation contract.** One test suite per feature. Each test case has: ID, type (`unit`/`integration`/`security`/`regression`), `blocking` flag, plain-language description, given/when/expected, and `verified_via` pointing to a specific field in the milestone report. The validator reads this only — never source code.
+**doc3 — validation contract.** One test suite per feature. Each test case has: ID, type (`unit`/`integration`/`security`/`regression`), `blocking` flag, plain-language description, and **interface-level** given/when/expected — concrete HTTP method, path, request body, expected status and response shape. Specific enough that someone who has never seen the implementation can write a test from it. `verified_via: executable_test` for feature-specific cases — the validator compiles these into a real pytest file and runs it against the live application. The three global security tests (SEC-GLOBAL-01/02/03) keep `verified_via: milestone_report.*` and are checked by deterministic Python, not compiled into tests.
 
-**doc4 — milestone report template.** The worker copies this to `reports/{feature_id}_milestone.md` and fills every field: what was implemented, what was left undone, every test phase run with exit code, issues discovered, security checklist status. This is the validator's only evidence source.
+**doc4 — milestone report template.** The worker copies this to `reports/{feature_id}_milestone.md` and fills every field: what was implemented, what was left undone, every test phase run with exit code, issues discovered, security checklist status. The validator's deterministic security checks (SEC-GLOBAL-01/02/03) read this report; the feature-specific tests run against the live application instead.
 
 ---
 
@@ -421,7 +446,7 @@ Gates are deliberate pauses. The graph writes to `project_state.json` and stops.
 
 **Contract approval.** CTO has generated doc1, doc2, doc3. You read all three. This is the highest-leverage gate — approve only when the acceptance criteria are specific enough to be testable and the security contract reflects your actual threat model.
 
-**PR review.** The validator has already run and passed before you see this gate. The pipeline committed the worker's code, pushed, opened the PR, ran Gemini validation against the spec — and only then pauses for your review. You review code that is already spec-compliant. After approving on GitHub, run `gh-check` then `resume` to trigger the merge.
+**PR review.** The validator has already run and passed before you see this gate — it generated real tests from doc3, ran them against a live instance of the application in Docker, and got real pass/fail results. The pipeline committed the worker's code, pushed, opened the PR, ran validation — and only then pauses for your review. You review code that already passed executable tests. After approving on GitHub, run `gh-check` then `resume` to trigger the merge.
 
 If validation fails, the pipeline routes back to the worker and you never see the PR — saving you from reviewing code that would not pass anyway.
 
@@ -452,11 +477,19 @@ python run.py memory F-01-002    # filtered for this feature
 
 ## Docker environment
 
-Workers use Docker for running test commands — not for git. The project directory is mounted at `/project`. The worker calls the `test_runner` tool (not raw bash), which runs commands inside the container via `docker/runner.py`.
+The test image (`dev-assistant-test`) serves three purposes: the worker's `test_runner` tool (install/lint/test/audit), running the application under test, and running the validator's generated pytest files. The project directory is mounted at `/project` in every container.
 
-The image includes: Node 20, npm, Python 3, pip-audit, GitHub CLI.
+The image includes: Node 20, npm, Python 3, `pip-audit`, `pytest`, `requests`, GitHub CLI.
 
-Git commands (branch, commit, push) run on the **host machine** via `git_ops.py` — they do not go through Docker.
+Git commands (branch, commit, push) run on the **host machine** via `git_ops.py` — they never go through Docker.
+
+**The shared network — `dev-assistant-net`.** When the validator runs, it creates this Docker network (idempotent — created once, reused after). The application container and the test-execution container both attach to it, so the test container can reach the app container by name (e.g. `http://app-f-01-001:3000`) via Docker's built-in DNS.
+
+**Worker test_runner** (`network=None`, i.e. `--network host`): used for `npm install`, `npm test`, `pip-audit`, etc. — needs internet access for package registries.
+
+**App container** (`app-{feature_id}`): started by the validator with `app_run_command` from doc0, on `dev-assistant-net`. Not `--rm` — if it crashes, `docker logs` is still readable for diagnostics. Removed explicitly after the validator run.
+
+**Test-execution container**: runs `pytest validation/{fid}_test.py -v` on `dev-assistant-net`, reaching the app container by its container name.
 
 **Rebuild the image** if you update `Dockerfile.test`:
 ```bash
@@ -472,6 +505,43 @@ TEST_IMAGE=my-project-test  # in .env
 ```bash
 docker run --rm -it -v $(pwd):/project -w /project dev-assistant-test bash
 ```
+
+**Debug a generated test against a running app manually:**
+```bash
+# Start the app on the shared network
+docker network create dev-assistant-net 2>/dev/null
+docker run -d --name app-debug --network dev-assistant-net \
+  -v $(pwd):/project -w /project dev-assistant-test \
+  bash -c "npm run dev"
+
+# Run the generated test against it
+docker run --rm --network dev-assistant-net \
+  -v $(pwd):/project -w /project dev-assistant-test \
+  python3 -m pytest validation/F-01-001_test.py -v
+
+# Clean up
+docker rm -f app-debug
+```
+
+---
+
+## How the validator works
+
+Three steps, in order, for every feature:
+
+**1. Generate.** The validator extracts the doc3 test suite for this feature — `given`/`when`/`expected` written at the HTTP interface level — and sends it to Gemini with a strict instruction: write a pytest file using `requests`, one function per `test_id`, named `test_<id_with_underscores>`. Gemini never sees the implementation. If the generated code has a syntax error or is missing a required function, the validator sends a correction prompt and retries (up to 3 attempts). The generated file is saved to `validation/{feature_id}_test.py` — committed to git as part of the audit trail.
+
+**2. Run.** The validator starts the application in a Docker container using `app_run_command`/`app_port` from doc0, on the shared `dev-assistant-net` network. It polls (`docker exec ... curl`) until the app responds — any HTTP response counts as ready, including 404s. If the app doesn't come up within 60 seconds, every test for this feature is marked failed with the container logs attached as the reason. Once ready, `pytest validation/{feature_id}_test.py -v` runs in a sibling container on the same network. The app container is removed afterward regardless of outcome.
+
+**3. Score.** Each doc3 `test_id` maps to an expected pytest function name (`F-01-001-T01` → `test_F_01_001_T01`). The validator searches the real pytest output for `::test_F_01_001_T01 PASSED|FAILED|ERROR|SKIPPED` and records the actual result. In parallel, three deterministic checks run against the milestone report — no LLM involved:
+
+| Check | What it verifies |
+|---|---|
+| SEC-GLOBAL-01 | No secrets/tokens/passwords appear in any `commands_run` summary |
+| SEC-GLOBAL-02 | `security_checklist_followed: true` in the milestone report |
+| SEC-GLOBAL-03 | The audit command (`npm audit`/`pip-audit`) exited 0 with no high/critical findings |
+
+`overall: pass` requires every **blocking** `test_id` to have actually passed in pytest, AND all three SEC-GLOBAL checks to pass. A failing non-blocking test or a `SKIPPED` result doesn't block the merge but appears in the milestone report for visibility.
 
 ---
 
@@ -505,9 +575,9 @@ The `develop` → `main` merge is always a human decision made after a full mile
 | `VALIDATOR_MODEL` | `gemini` | Provider for validation (`claude` or `gemini`) |
 | `TEST_IMAGE` | `dev-assistant-test` | Docker test image name |
 
-**Gemini 2.5 Flash specifics.** The router always passes `thinkingBudget: 0` to disable extended thinking for structured outputs, sets `maxOutputTokens: 8192` minimum, retries on 429/503 with 15s × attempt backoff (5 attempts), and guards against truncated responses. These are not optional — Gemini 2.5 Flash silently consumes its token budget on internal reasoning before writing the response, which causes truncation without these mitigations.
+**Gemini 2.5 Flash specifics.** The router always passes `thinkingBudget: 0` to disable extended thinking for structured outputs, sets `maxOutputTokens: 8192` minimum, retries on 429/503 with 15s × attempt backoff (5 attempts), and guards against truncated responses. These are not optional — Gemini 2.5 Flash silently consumes its token budget on internal reasoning before writing the response, which causes truncation without these mitigations. The same settings apply to the validator's test-code generation calls.
 
-The validator uses a different provider than the worker. This is structural — the same model cannot write and validate its own work.
+The validator uses a different provider than the worker for code generation. But the actual pass/fail no longer depends on either model's judgment — it comes from a real pytest exit code against a running instance of the application, plus deterministic Python checks on the milestone report. The model's only job is translating a spec into test code.
 
 ---
 
@@ -534,8 +604,14 @@ The `git_node` couldn't push. Most common cause: the remote branch already exist
 **`gh-check` returns "no PR found"**
 The worker may not have filed the milestone report correctly, so `git_node` may not have opened the PR. Check `reports/` for the milestone file and check GitHub for a PR with the feature ID in the title. If missing, the feature can be requeued.
 
+**"App did not become ready"**
+The validator started the app with `app_run_command` but it never responded within 60 seconds. The milestone report's `validator_result.note` includes the container's last logs. Common causes: `app_run_command` is wrong for this stack (fix via plan rejection before contracts are generated, or manually correct `app_run_command`/`app_port` in doc0 and requeue), the app needs an env var that isn't set (add it to `.env` and to the `APP_`/`PORT`-prefixed allowlist in `docker/runner.py._safe_env` if needed), or the app takes longer than 60s to start (increase `APP_READY_TIMEOUT` in `docker/runner.py`).
+
+**"Generated test function not found in pytest output"**
+Gemini's generated `validation/{feature_id}_test.py` doesn't define a function named `test_<test_id_with_underscores>` matching a doc3 test_id, even after 3 correction attempts. Open the generated file — usually the spec in doc3 was too vague for a function-per-test_id mapping. Tighten the `given`/`when`/`expected` wording in doc3 to be more concrete (exact HTTP method/path/body), then requeue.
+
 **Validator always fails**
-The milestone report is incomplete or vague. The validator is strict — absence of evidence is a fail. Read the specific test cases that failed in `reports/{feature_id}_milestone.md` under `validator_result`. Fix the underlying implementation gap, update the report, and requeue.
+Two possible causes. (1) The generated tests are failing for real — open `validation/{feature_id}_test.py` and the milestone report's `validator_result.note` to see which `test_id`s failed and why; this usually means the implementation doesn't match the doc3 spec, or the spec itself was ambiguous. (2) `app_run_command` doesn't actually start the app — see "App did not become ready" above. Either way, the failure reasons in `validator_result.failures` and `.results` point at specific `test_id`s, not a vague "fail".
 
 **CTO contracts are missing a feature**
 Run `python run.py resume --decision reject --note "F-01-003 missing from doc2"`. The CTO regenerates all three contracts.
@@ -545,7 +621,7 @@ Run `python run.py resume`. LangGraph resumes from the last completed node. If i
 
 **Want to restart from scratch**
 ```bash
-rm project_state.json checkpoints.db memory.json
+rm -rf project_state.json checkpoints.db memory.json validation/
 git checkout doc1_security_contract.md doc2_features_contract.md doc3_validation_contract.md
 python run.py start
 ```
@@ -562,6 +638,7 @@ python run.py start
 | `doc3_validation_contract.md` | CTO | Read it. If you edit doc2, update matching suites here too. |
 | `doc4_milestone_report.md` | Template | Never edit directly — workers copy it per feature. |
 | `reports/*.md` | Workers + pipeline | Workers write the report body; pipeline writes `validator_result`. Read-only for you. |
+| `validation/*_test.py` | Validator | Generated pytest files. Read-only for you — useful for debugging a failed validation. Commit to git as audit trail. |
 | `memory.json` | Pipeline | Never edit — append-only, managed after each milestone. |
 | `project_state.json` | Pipeline | Never edit — managed by `gates/state_store.py`. |
 | `checkpoints.db` | LangGraph | Never edit. |
