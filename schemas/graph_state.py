@@ -18,6 +18,8 @@ class FeatureContext(TypedDict):
     block_text:   str          # raw feature block from doc2
     memory:       Dict         # filtered memory.json for this feature
     branch_name:  str
+    retry_note:   str          # "" on first attempt; populated by `retry` with
+                                # the previous attempt's validator failure details
 
 
 class WorkerResult(TypedDict):

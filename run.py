@@ -8,6 +8,8 @@ Commands:
   resume [--decision approve|reject] [--note "..."]
                                 Continue after a human gate
   gh-check <feature_id>         Poll GitHub PR — detect approval/merge, flip human_gate
+  retry <feature_id> [--force]  Requeue a FAILED feature, feeding the worker the
+                                 previous validator failure so it doesn't repeat it
   status                        Show project state and feature board
   memory [feature_id]           Show project memory
 
@@ -17,6 +19,7 @@ Usage:
   python run.py resume --decision approve
   python run.py resume --decision reject --note "fix the auth section"
   python run.py gh-check F-01-001
+  python run.py retry F-01-001
   python run.py status
   python run.py memory
   python run.py memory F-01-002
@@ -53,6 +56,7 @@ _load_env()
 from schemas.pipeline_state import ProjectState, Phase, FeatureStatus
 from gates import state_store
 from memory import store as mem_store
+import git_ops
 
 RESET  = "\033[0m"
 BOLD   = "\033[1m"
@@ -61,6 +65,8 @@ YELLOW = "\033[33m"
 RED    = "\033[31m"
 CYAN   = "\033[36m"
 DIM    = "\033[2m"
+
+MAX_FEATURE_RETRIES = 3
 
 def c(col: str, txt: str) -> str:
     return f"{col}{txt}{RESET}"
@@ -114,7 +120,9 @@ def cmd_start():
         "selected_features":     [],
         "feature_contexts":      {},
         "worker_results":        {},
+        "git_results":           {},
         "validator_results":     {},
+        "merge_results":         {},
         "gate_type":             None,
         "gate_message":          None,
         "gate_feature":          None,
@@ -470,6 +478,177 @@ def cmd_gh_check(feature_id: str) -> None:
         print(c(DIM, "  Address the review comments, push to the same branch, then re-check."))
     print()
 
+
+# ---------------------------------------------------------------------------
+# retry — requeue a FAILED feature with validator failure context
+# ---------------------------------------------------------------------------
+
+def cmd_retry(feature_id: str, force: bool = False) -> None:
+    """
+    Requeue a feature that failed validation.
+
+    What this does:
+      1. Reads the previous validator result and builds a "previous attempt
+         failed" note from its failures/escalations/per-test results.
+      2. Clears this feature's entries from worker_results, git_results,
+         validator_results, merge_results in the graph checkpoint — so the
+         worker → git → validator chain runs again for this feature.
+      3. Attaches the failure note to feature_contexts[fid] — the worker's
+         next prompt opens with "Previous attempt failed — read this first".
+      4. Resets the feature's status in project_state.json to SELECTED and
+         increments retry_count.
+      5. Checks out the existing feature branch (non-destructive — the prior
+         commit and PR stay intact; the next git_node push updates the same PR).
+      6. Resumes the graph.
+
+    Refuses after MAX_FEATURE_RETRIES unless --force is given.
+    """
+    from graph import build_graph, _load_features_from_doc2
+    from agents import cto as cto_agent
+
+    fid = feature_id.upper()
+    g   = build_graph(str(ROOT / "checkpoints.db"))
+    cfg = {"configurable": {"thread_id": THREAD_ID}}
+
+    snap = g.get_state(cfg)
+    if snap is None or not snap.values:
+        print(c(YELLOW, "\n  No checkpoint found. Run 'python run.py start' first.\n"))
+        sys.exit(1)
+
+    current = snap.values
+    ps = state_store.load(ROOT)
+
+    if fid not in ps.features:
+        print(c(RED, f"\n✗ Feature {fid} not found."))
+        print(c(DIM,  "  Check 'python run.py status' for valid feature IDs.\n"))
+        sys.exit(1)
+
+    fr = ps.features[fid]
+
+    if fr.status != FeatureStatus.FAILED:
+        print(c(YELLOW, f"\n  {fid} is not FAILED (current status: {fr.status.value})."))
+        print(c(DIM,    "  Nothing to retry.\n"))
+        return
+
+    if fr.retry_count >= MAX_FEATURE_RETRIES and not force:
+        print(c(RED, f"\n✗ {fid} has already been retried {fr.retry_count} times "
+                      f"(max {MAX_FEATURE_RETRIES})."))
+        print(c(DIM,  "  This usually means the doc3 spec or doc2 acceptance criteria "
+                       "need a human look — see validation/ and the milestone report."))
+        print(c(DIM,  f"  To retry anyway: python run.py retry {fid} --force\n"))
+        sys.exit(1)
+
+    if current.get("gate_type"):
+        print(c(YELLOW, f"\n  ⚠ A gate is currently pending ({current['gate_type']}) "
+                          "for another feature. Clearing it to retry — "
+                          "make sure that gate doesn't need attention first.\n"))
+
+    # Build the failure note from the previous validator result
+    val_results = current.get("validator_results", {}) or {}
+    retry_note  = _build_retry_note(fid, val_results.get(fid, {}), fr.last_error)
+
+    # Rebuild / update feature_contexts[fid] with the retry note
+    contexts = dict(current.get("feature_contexts", {}) or {})
+    if fid in contexts:
+        ctx = dict(contexts[fid])
+        ctx["retry_note"] = retry_note
+        contexts[fid] = ctx
+    else:
+        # Context was missing (shouldn't normally happen) — rebuild from doc2
+        features_raw = _load_features_from_doc2(ROOT)
+        passed       = [f for f, r in ps.features.items() if r.status == FeatureStatus.PASSED]
+        rebuilt      = cto_agent.build_feature_contexts(features_raw, [fid], passed, ROOT)
+        if fid not in rebuilt:
+            print(c(RED, f"\n✗ Could not rebuild context for {fid} — check doc2 for this feature.\n"))
+            sys.exit(1)
+        ctx = dict(rebuilt[fid])
+        ctx["retry_note"] = retry_note
+        contexts[fid] = ctx
+
+    # Checkout the existing branch (non-destructive — keeps prior commit + PR)
+    branch = contexts[fid].get("branch_name", f"feature/{fid.lower()}")
+    co = git_ops.checkout_branch(branch, ROOT)
+    if co.success:
+        print(c(DIM, f"  Checked out {branch}"))
+    else:
+        print(c(YELLOW, f"  ⚠ Could not checkout {branch}: {co.output[:120]}"))
+        print(c(DIM,    "  The worker may run on the wrong branch — check git status."))
+
+    # Clear this feature's entries so the chain runs again
+    worker_results     = {k: v for k, v in (current.get("worker_results", {})     or {}).items() if k != fid}
+    git_results        = {k: v for k, v in (current.get("git_results", {})        or {}).items() if k != fid}
+    validator_results  = {k: v for k, v in (current.get("validator_results", {})  or {}).items() if k != fid}
+    merge_results       = {k: v for k, v in (current.get("merge_results", {})      or {}).items() if k != fid}
+
+    # Reset pipeline state for this feature
+    fr.retry_count += 1
+    fr.status            = FeatureStatus.SELECTED
+    fr.last_error        = ""
+    fr.validator_result  = ""
+    ps.add_log("info", f"Retrying {fid} (attempt {fr.retry_count + 1})", retry_note[:200])
+    state_store.save(ps, ROOT)
+
+    print(c(GREEN, f"\n  ✓ {fid} requeued — attempt {fr.retry_count + 1}/{MAX_FEATURE_RETRIES}\n"))
+    print(c(DIM, "  The worker will see:"))
+    print(c(DIM, "  " + retry_note.replace("\n", "\n  ")))
+    print()
+
+    updated = {
+        **current,
+        "phase":             "implementation",
+        "feature_contexts":  contexts,
+        "worker_results":    worker_results,
+        "git_results":       git_results,
+        "validator_results": validator_results,
+        "merge_results":     merge_results,
+        "gate_type":    None,
+        "gate_message": None,
+        "gate_feature": None,
+    }
+
+    _stream(g, updated, cfg)
+
+
+def _build_retry_note(fid: str, vr: dict, last_error: str) -> str:
+    """
+    Format the previous validator result into a note for the worker's
+    next prompt — specific enough to avoid repeating the same mistake.
+    """
+    if not vr:
+        if last_error:
+            return f"The previous attempt failed: {last_error}"
+        return "The previous attempt failed validation (no details available)."
+
+    lines = [f"Validation failed for {fid} on the previous attempt."]
+
+    failures    = vr.get("failures", [])
+    escalations = vr.get("escalations", [])
+    results     = vr.get("results", [])
+
+    if escalations:
+        lines.append(f"Security escalations: {', '.join(escalations)}")
+    if failures:
+        lines.append(f"Failed checks: {', '.join(failures)}")
+
+    failed_results = [r for r in results if r.get("status") == "fail"]
+    if failed_results:
+        lines.append("")
+        lines.append("Specific failures from the generated test run:")
+        for r in failed_results:
+            note = r.get("notes", "") or "no details provided"
+            lines.append(f"  - {r.get('test_id', '?')}: {note}")
+
+    lines.append("")
+    lines.append(
+        "Fix these specific issues. If a generated test seems to test the "
+        "wrong thing, the implementation may still be correct — but you "
+        "cannot change validation/ or doc3, only your implementation. "
+        "If you believe the spec itself is wrong, say so explicitly in "
+        "issues_discovered in the milestone report."
+    )
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -478,6 +657,7 @@ def main():
     args     = sys.argv[1:]
     decision = ""
     note     = ""
+    force    = False
 
     filtered = []
     i = 0
@@ -486,6 +666,8 @@ def main():
             decision = args[i + 1]; i += 2
         elif args[i] == "--note" and i + 1 < len(args):
             note = args[i + 1]; i += 2
+        elif args[i] == "--force":
+            force = True; i += 1
         else:
             filtered.append(args[i]); i += 1
     args = filtered
@@ -511,9 +693,14 @@ def main():
             print(c(RED, "\n✗ gh-check requires a feature_id: python run.py gh-check F-01-001\n"))
             sys.exit(1)
         cmd_gh_check(args[1])
+    elif cmd == "retry":
+        if len(args) < 2:
+            print(c(RED, "\n✗ retry requires a feature_id: python run.py retry F-01-001\n"))
+            sys.exit(1)
+        cmd_retry(args[1], force=force)
     else:
         print(c(RED, f"\n✗ Unknown command: {cmd}"))
-        print(c(DIM, "  Valid: start, resume, status, memory\n"))
+        print(c(DIM, "  Valid: start, resume, status, memory, gh-check, retry, docker-build\n"))
         sys.exit(1)
 
 

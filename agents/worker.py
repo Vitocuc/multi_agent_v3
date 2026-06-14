@@ -162,8 +162,15 @@ def run(context: FeatureContext, root: Path = ROOT) -> WorkerResult:
     mem_str = json.dumps(context["memory"], indent=2)
 
     # Build initial prompt
+    retry_note = context.get("retry_note", "")
+    retry_section = (
+        f"## Previous attempt failed — read this first\n\n{retry_note}\n\n"
+        if retry_note else ""
+    )
+
     initial_prompt = (
         f"You are implementing feature {fid}: {context['title']}.\n\n"
+        f"{retry_section}"
         "## Your feature block\n"
         f"{context['block_text']}\n\n"
         "## Filtered project memory\n"

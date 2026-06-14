@@ -261,6 +261,7 @@ def build_feature_contexts(
             block_text=f.get("_raw", ""),
             memory=filtered_mem,
             branch_name=f.get("branch_name", f"feature/{fid.lower()}"),
+            retry_note="",
         )
 
     return ctx

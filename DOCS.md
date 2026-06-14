@@ -10,6 +10,9 @@ A pipeline that helps you build software projects. You describe the idea, the sy
 
 | Date | Change |
 |---|---|
+| 14 Jun 2026 | Added `python run.py retry <feature_id>` — requeues a FAILED feature with the previous validator failure fed back to the worker; fixes the dead-end where a failed feature had no path forward |
+| 14 Jun 2026 | `git_ops.open_pr()` made idempotent — retries push to the same existing PR instead of erroring on "already exists" |
+| 14 Jun 2026 | New section: "What's Python, what's AI, what's you" — stage-by-stage breakdown of the pipeline |
 | 14 Jun 2026 | Validator rewritten: generates executable pytest from doc3, runs it against the live app — real exit codes, not LLM opinion |
 | 14 Jun 2026 | Added `app_run_command` / `app_port` to the shared plan — CTO decides how to start the app for testing |
 | 14 Jun 2026 | Global security checks (SEC-GLOBAL-01/02/03) are now deterministic Python, not LLM-judged |
@@ -38,15 +41,17 @@ A pipeline that helps you build software projects. You describe the idea, the sy
 6. [The execution graph](#the-execution-graph)
 7. [The six phases](#the-six-phases)
 8. [Separation of concerns — who does what](#separation-of-concerns--who-does-what)
-9. [Contract files](#contract-files)
-10. [Human gates — what requires your input](#human-gates)
-11. [Project memory](#project-memory)
-12. [Docker environment](#docker-environment)
-13. [How the validator works](#how-the-validator-works)
-14. [Branch strategy](#branch-strategy)
-15. [Model configuration](#model-configuration)
-16. [Troubleshooting](#troubleshooting)
-17. [File ownership — what you can and cannot edit](#file-ownership--what-you-can-and-cannot-edit)
+9. [What's Python, what's AI, what's you](#whats-python-whats-ai-whats-you)
+10. [Contract files](#contract-files)
+11. [Human gates — what requires your input](#human-gates)
+12. [Retrying a failed feature](#retrying-a-failed-feature)
+13. [Project memory](#project-memory)
+14. [Docker environment](#docker-environment)
+15. [How the validator works](#how-the-validator-works)
+16. [Branch strategy](#branch-strategy)
+17. [Model configuration](#model-configuration)
+18. [Troubleshooting](#troubleshooting)
+19. [File ownership — what you can and cannot edit](#file-ownership--what-you-can-and-cannot-edit)
 
 ---
 
@@ -75,6 +80,32 @@ The pipeline has three agent roles and one pipeline role.
 5. Reviewing and approving the PR on GitHub
 
 Everything else is automatic.
+
+---
+
+## Stage by stage — Python, AI, or human
+
+Every stage of the pipeline does work that falls into one of three categories: deterministic Python (no model call, same input always gives same output), AI (a Claude or Gemini call produces the content), or human (you). Most stages mix more than one.
+
+| Stage | Python (deterministic) | AI | Human |
+|---|---|---|---|
+| Clarification loop | round counting, doc0 writing, history tracking | the question itself, the "sufficient" decision | answering |
+| Shared plan | writes to doc0, Pydantic validation | summary, decisions, tech stack, `app_run_command`/`app_port` | approve / reject |
+| Contracts (doc1–3) | parses doc2 into feature blocks, saves files | all contract content, consistency check | approve / reject |
+| Feature selection | menu CLI, dependency chain, memory filtering | spawn plan grouping (parallel vs sequential) | selection |
+| Git branch setup | 100% — `git_ops.setup_branch` | — | — |
+| Worker implementation | tool execution (file I/O, Docker exec), 40-turn loop control, standing-rules loading | **all the code, all the milestone report content** | — |
+| git_node (commit/push/PR) | 100% — `git_ops.py` | — | — |
+| Validator: test generation | doc3 parsing, function-name mapping, syntax/retry checks | generates pytest code from spec | — |
+| Validator: test execution + scoring | 100% — Docker start/stop, real pytest results, regex result mapping | — | — |
+| Validator: security checks | 100% — `_check_security` | — | — |
+| PR review gate | `gh-check` polling | — | review + approve |
+| merge_node | 100% — `git_ops.merge_pr` | — | — |
+| Memory extraction | 100% — regex parsing of milestone report | — | — |
+
+**The worker is the only stage where AI output is the final, unverified product** — its code is what ships. Every other AI call produces either a draft that Python then verifies (the validator's generated tests are syntax-checked and run for real before they mean anything) or structured content that Python enforces the shape of (CTO outputs via Pydantic, doc2 parsing).
+
+The most important property of this design: **AI has zero say in pass/fail**. Validation outcome is 100% Python — real pytest exit codes against a running instance of the application, plus deterministic regex checks on the milestone report. The model's role in validation is translation (spec → test code), not judgment.
 
 ---
 
@@ -347,6 +378,10 @@ python run.py resume --decision reject --note "your note here"
 # Detect GitHub PR approval and update pipeline state
 python run.py gh-check F-01-001
 
+# Requeue a feature that failed validation
+python run.py retry F-01-001
+python run.py retry F-01-001 --force   # bypass the retry cap
+
 # Check project state at any time
 python run.py status
 
@@ -356,6 +391,8 @@ python run.py memory F-01-002
 ```
 
 `gh-check` polls GitHub for the PR associated with a feature ID. If the PR is approved or merged, it writes `human_gate: approved` into the milestone report and marks the feature ready for validation. Run it after you approve the PR on GitHub, then run `resume`.
+
+`retry` requeues a `FAILED` feature — see [Retrying a failed feature](#retrying-a-failed-feature) below.
 
 ---
 
@@ -424,6 +461,32 @@ The validator does briefly run a Docker container (the application under test) �
 
 ---
 
+## What's Python, what's AI, what's you
+
+The table above shows boundaries by role. This table shows the same pipeline from a different angle — for each stage, what fraction is deterministic Python versus a model call versus a human decision.
+
+| Stage | Python (deterministic) | AI | Human |
+|---|---|---|---|
+| Clarification loop | round counting, doc0 writing, history tracking | the question itself, "sufficient" decision | answering |
+| Shared plan | writes to doc0, Pydantic validation | summary, decisions, tech stack, `app_run_command`/`app_port` | approve/reject |
+| Contracts (doc1–3) | parses doc2 into feature blocks, saves files | all contract content, consistency check | approve/reject |
+| Feature selection | menu CLI, dependency chain, memory filtering | spawn plan grouping (parallel vs sequential) | selection |
+| Git branch setup | 100% (`git_ops.setup_branch`) | — | — |
+| Worker implementation | tool execution (file I/O, Docker exec), 40-turn loop control, standing-rules loading | **all the code, all the milestone report content** | — |
+| git_node (commit/push/PR) | 100% (`git_ops.py`) | — | — |
+| Validator: test generation | doc3 parsing, function-name mapping, syntax/retry checks | generates pytest code from spec | — |
+| Validator: test execution + scoring | 100% — Docker start/stop, real pytest results, regex result mapping | — | — |
+| Validator: security checks | 100% (`_check_security`) | — | — |
+| PR review gate | `gh-check` polling | — | review + approve |
+| merge_node | 100% (`git_ops.merge_pr`) | — | — |
+| Memory extraction | 100% (regex parsing of milestone report) | — | — |
+
+**The worker is the only stage where AI output is the final, unverified product** — its code is what ships. Every other AI call produces either a draft that Python then verifies (the validator's generated tests get syntax-checked and run for real before they count) or structured content whose shape Python enforces via Pydantic (CTO outputs).
+
+The key structural property: **AI has zero say in pass/fail.** Validation result is 100% Python — real pytest exit codes against the running app, plus regex checks on the milestone report. The model's role in validation is translation (spec → test code), never judgment.
+
+---
+
 ## Contract files
 
 The three contracts start as templates in the repo. The CTO fills them in at runtime. After generation they should be committed to git.
@@ -448,11 +511,39 @@ Gates are deliberate pauses. The graph writes to `project_state.json` and stops.
 
 **PR review.** The validator has already run and passed before you see this gate — it generated real tests from doc3, ran them against a live instance of the application in Docker, and got real pass/fail results. The pipeline committed the worker's code, pushed, opened the PR, ran validation — and only then pauses for your review. You review code that already passed executable tests. After approving on GitHub, run `gh-check` then `resume` to trigger the merge.
 
-If validation fails, the pipeline routes back to the worker and you never see the PR — saving you from reviewing code that would not pass anyway.
+If validation fails, you never see a PR review gate for this feature — the pipeline marks it `FAILED` and stops making progress on it. See [Retrying a failed feature](#retrying-a-failed-feature) for how to get it moving again.
 
 **Security escalation.** The validator found `security_checklist_followed: false` or a security test failed. You acknowledge before the pipeline continues.
 
 The graph is resumable indefinitely. You can stop and come back days later — `resume` continues from the exact node where it paused.
+
+---
+
+## Retrying a failed feature
+
+When a feature fails validation, it has **no automatic path forward**. The graph marks it `FAILED` and every routing check in `_route_impl` finds nothing left to do for it — without `retry`, this is a dead end that would eventually hit LangGraph's recursion limit if you just kept calling `resume`.
+
+```bash
+python run.py retry F-01-001
+```
+
+What `retry` does, in order:
+
+1. **Reads the previous validator result** — `failures`, `escalations`, and the per-`test_id` results from the last validation run.
+2. **Builds a failure note** from that result — which specific `test_id`s failed and why, which security checks escalated.
+3. **Clears `F-01-001` from `worker_results`, `git_results`, `validator_results`, `merge_results`** in the graph checkpoint, so the `worker → git → validator` chain runs again for this feature only. Other features' state is untouched.
+4. **Attaches the failure note to `feature_contexts[F-01-001]`** — the worker's next prompt opens with a `## Previous attempt failed — read this first` section listing exactly which tests failed and why.
+5. **Checks out the existing feature branch** (non-destructive — `git checkout`, not `git checkout -b`). The previous commit and PR stay intact.
+6. **Resets the `FeatureRecord`** — status back to `SELECTED`, `retry_count += 1`, clears `last_error`.
+7. **Resumes the graph.**
+
+Because the branch and PR already exist, `git_node`'s next commit just pushes more commits to the same branch — and `git_ops.open_pr()` is idempotent, so it detects the existing PR and doesn't try to create a duplicate. The PR you were going to review updates in place.
+
+**Retry cap.** After `MAX_FEATURE_RETRIES` (3) failed attempts, `retry` refuses and points you at `validation/{feature_id}_test.py` and the milestone report — at that point the issue is usually that doc3's spec or doc2's acceptance criteria need a human look, not another worker attempt. Override with `--force`:
+
+```bash
+python run.py retry F-01-001 --force
+```
 
 ---
 

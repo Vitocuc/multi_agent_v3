@@ -103,6 +103,22 @@ def setup_branch(feature_id: str, branch_name: str, root: Path) -> GitResult:
     return r
 
 
+def checkout_branch(branch_name: str, root: Path) -> GitResult:
+    """
+    Checkout an existing feature branch WITHOUT creating or deleting it.
+    Used by `retry` — the branch and its commit/PR already exist from the
+    previous attempt; we just need to make sure it's checked out before the
+    worker runs again. Falls back to tracking the remote branch if it only
+    exists on origin.
+    """
+    r = _run(["git", "checkout", branch_name], root)
+    if r.success:
+        return r
+
+    _run(["git", "fetch", "origin"], root)
+    return _run(["git", "checkout", "-b", branch_name, f"origin/{branch_name}"], root)
+
+
 # ---------------------------------------------------------------------------
 # Commit and push
 # ---------------------------------------------------------------------------
@@ -150,7 +166,26 @@ def open_pr(
     Open a GitHub PR targeting develop.
     PR body is the milestone report content.
     Requires: gh CLI installed and GH_TOKEN / GITHUB_TOKEN in environment.
+
+    Idempotent: if a PR for this feature already exists (e.g. a previous
+    attempt opened it, and this is a retry), returns success with the
+    existing PR's URL instead of erroring on "already exists".
     """
+    existing = pr_status(feature_id, root)
+    if existing is not None:
+        if existing.merged:
+            return GitResult(
+                success=True, stdout=existing.url,
+                stderr="PR already merged", exit_code=0,
+                command="gh pr create (already merged)",
+            )
+        if existing.state == "OPEN":
+            return GitResult(
+                success=True, stdout=existing.url,
+                stderr="PR already exists — push updates it automatically",
+                exit_code=0, command="gh pr create (existing)",
+            )
+
     if not report_path.exists():
         return GitResult(
             success=False, stdout="",
