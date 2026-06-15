@@ -10,6 +10,7 @@ A pipeline that helps you build software projects. You describe the idea, the sy
 
 | Date | Change |
 |---|---|
+| 14 Jun 2026 | Added `services` + `app_env` to the shared plan — apps needing a database, cache, or queue get those started on the shared Docker network before the app, with connection env vars injected |
 | 14 Jun 2026 | Added `python run.py retry <feature_id>` — requeues a FAILED feature with the previous validator failure fed back to the worker; fixes the dead-end where a failed feature had no path forward |
 | 14 Jun 2026 | `git_ops.open_pr()` made idempotent — retries push to the same existing PR instead of erroring on "already exists" |
 | 14 Jun 2026 | New section: "What's Python, what's AI, what's you" — stage-by-stage breakdown of the pipeline |
@@ -256,12 +257,22 @@ on port `3000`). **Check these carefully** — the validator runs this command
 verbatim in Docker to start the app and test it. If it's wrong for your stack,
 reject with a note.
 
+If the app needs a database, cache, or queue, doc0 also gets a fenced `app_env`/
+`services` block — e.g. a Postgres container named `db` plus `DATABASE_URL`
+pointing at it. Check that the service images, ports, and credentials are
+sensible, and that `app_env` actually matches what your framework expects
+(e.g. the right env var name for your ORM's connection string). This is the
+other thing worth a careful read before approving — get it wrong here and
+every feature's validation fails for the same reason.
+
 ```bash
 python run.py resume --decision approve
 # or
 python run.py resume --decision reject --note "auth should use sessions not JWT"
 # or
 python run.py resume --decision reject --note "app_run_command should be 'python manage.py runserver 0.0.0.0:8000'"
+# or
+python run.py resume --decision reject --note "app_env should use DATABASE_URL not DB_CONNECTION_STRING for Prisma"
 ```
 
 ### Step 4 — approve the contracts
@@ -344,7 +355,7 @@ python run.py resume --decision approve
 
 The validator already ran before this gate (Step 6.5). To recap what happened:
 
-1. **Validator** read only the doc3 test suite, generated a pytest file from it (Gemini — never sees source code), started the app in Docker with `app_run_command`, and ran the generated tests against it for real
+1. **Validator** read only the doc3 test suite, generated a pytest file from it (Gemini — never sees source code), started any required services (database, cache) plus the app in Docker with `app_run_command`/`app_env`, and ran the generated tests against it for real
 2. Each doc3 `test_id` got a real PASSED/FAILED/ERROR/SKIPPED result from pytest — not an LLM opinion
 3. The three global security checks ran as pure Python against the milestone report
 4. `overall: pass` only because every blocking test_id actually passed and the security checks were clean
@@ -448,7 +459,7 @@ This is the most important design principle. Every role has strict boundaries.
 
 | Role | Reads | Writes | Git access |
 |---|---|---|---|
-| **CTO** (Claude/Gemini) | doc0, doc1–3 templates, memory.json | doc0 clarification log, doc1, doc2, doc3 | None |
+| **CTO** (Claude/Gemini) | doc0, doc1–3 templates, memory.json | doc0 clarification log + shared plan (incl. `app_run_command`/`app_port`/`app_env`/`services`), doc1, doc2, doc3 | None |
 | **Worker** (Claude API) | doc1, doc2 feature block, doc4 template, memory | Source files, `reports/{fid}_milestone.md` | **None** |
 | **Validator** (Gemini + Python) | doc3 test suite **only** (never source code) | `validation/{fid}_test.py`, validator_result in milestone report | **None** |
 | **git_node** (Python) | Source files on disk | git history, GitHub PR | **Full** |
@@ -457,7 +468,7 @@ This is the most important design principle. Every role has strict boundaries.
 
 Workers cannot lie about opening a PR — the PR is opened by `git_node` reading the actual files on disk. The validator cannot be influenced by the implementation — Gemini only ever sees the doc3 spec, and the pass/fail comes from a real pytest exit code against the running app, not from reading the worker's claims. These are structural guarantees, not prompt-level instructions.
 
-The validator does briefly run a Docker container (the application under test) — this is execution, not git, and the container is removed immediately after the test run regardless of outcome.
+The validator does briefly run Docker containers — the application under test, plus any auxiliary services (database, cache) doc0 lists. This is execution, not git, and every container is removed immediately after the test run regardless of outcome.
 
 ---
 
@@ -468,14 +479,15 @@ The table above shows boundaries by role. This table shows the same pipeline fro
 | Stage | Python (deterministic) | AI | Human |
 |---|---|---|---|
 | Clarification loop | round counting, doc0 writing, history tracking | the question itself, "sufficient" decision | answering |
-| Shared plan | writes to doc0, Pydantic validation | summary, decisions, tech stack, `app_run_command`/`app_port` | approve/reject |
+| Shared plan | writes to doc0, Pydantic validation | summary, decisions, tech stack, `app_run_command`/`app_port`/`app_env`/`services` | approve/reject |
 | Contracts (doc1–3) | parses doc2 into feature blocks, saves files | all contract content, consistency check | approve/reject |
 | Feature selection | menu CLI, dependency chain, memory filtering | spawn plan grouping (parallel vs sequential) | selection |
 | Git branch setup | 100% (`git_ops.setup_branch`) | — | — |
 | Worker implementation | tool execution (file I/O, Docker exec), 40-turn loop control, standing-rules loading | **all the code, all the milestone report content** | — |
 | git_node (commit/push/PR) | 100% (`git_ops.py`) | — | — |
 | Validator: test generation | doc3 parsing, function-name mapping, syntax/retry checks | generates pytest code from spec | — |
-| Validator: test execution + scoring | 100% — Docker start/stop, real pytest results, regex result mapping | — | — |
+| Validator: service + app lifecycle | 100% — starts `services` (db/redis/...) and the app in Docker, TCP/HTTP readiness checks, teardown | — | — |
+| Validator: test execution + scoring | 100% — real pytest results, regex result mapping | — | — |
 | Validator: security checks | 100% (`_check_security`) | — | — |
 | PR review gate | `gh-check` polling | — | review + approve |
 | merge_node | 100% (`git_ops.merge_pr`) | — | — |
@@ -578,7 +590,9 @@ Git commands (branch, commit, push) run on the **host machine** via `git_ops.py`
 
 **Worker test_runner** (`network=None`, i.e. `--network host`): used for `npm install`, `npm test`, `pip-audit`, etc. — needs internet access for package registries.
 
-**App container** (`app-{feature_id}`): started by the validator with `app_run_command` from doc0, on `dev-assistant-net`. Not `--rm` — if it crashes, `docker logs` is still readable for diagnostics. Removed explicitly after the validator run.
+**App container** (`app-{feature_id}`): started by the validator with `app_run_command` from doc0, on `dev-assistant-net`, with `app_env` injected as `-e` flags. Not `--rm` — if it crashes, `docker logs` is still readable for diagnostics. Removed explicitly after the validator run.
+
+**Service containers** (`db`, `redis`, etc. — named exactly as in doc0's `services` list): off-the-shelf images (e.g. `postgres:16-alpine`) started before the app, on `dev-assistant-net`, with their own `env` from doc0 (e.g. `POSTGRES_PASSWORD`). No volume mount — ephemeral, fresh state every validation run. The app reaches them by container name as hostname (Docker's built-in DNS), which is why `app_env`'s connection strings use names like `db`/`redis` as the host. Removed explicitly alongside the app container, in the same `finally` block — if a service fails to become reachable, the app is never started and every test fails with that service's logs attached.
 
 **Test-execution container**: runs `pytest validation/{fid}_test.py -v` on `dev-assistant-net`, reaching the app container by its container name.
 
@@ -597,12 +611,21 @@ TEST_IMAGE=my-project-test  # in .env
 docker run --rm -it -v $(pwd):/project -w /project dev-assistant-test bash
 ```
 
-**Debug a generated test against a running app manually:**
+**Debug a generated test against a running app + database manually:**
 ```bash
-# Start the app on the shared network
+# Shared network
 docker network create dev-assistant-net 2>/dev/null
+
+# Start the database (matches a `services` entry in doc0)
+docker run -d --name db --network dev-assistant-net \
+  -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=appdb \
+  postgres:16-alpine
+
+# Start the app on the shared network, with app_env from doc0
 docker run -d --name app-debug --network dev-assistant-net \
-  -v $(pwd):/project -w /project dev-assistant-test \
+  -v $(pwd):/project -w /project \
+  -e DATABASE_URL=postgresql://postgres:postgres@db:5432/appdb \
+  dev-assistant-test \
   bash -c "npm run dev"
 
 # Run the generated test against it
@@ -611,7 +634,7 @@ docker run --rm --network dev-assistant-net \
   python3 -m pytest validation/F-01-001_test.py -v
 
 # Clean up
-docker rm -f app-debug
+docker rm -f app-debug db
 ```
 
 ---
@@ -622,7 +645,7 @@ Three steps, in order, for every feature:
 
 **1. Generate.** The validator extracts the doc3 test suite for this feature — `given`/`when`/`expected` written at the HTTP interface level — and sends it to Gemini with a strict instruction: write a pytest file using `requests`, one function per `test_id`, named `test_<id_with_underscores>`. Gemini never sees the implementation. If the generated code has a syntax error or is missing a required function, the validator sends a correction prompt and retries (up to 3 attempts). The generated file is saved to `validation/{feature_id}_test.py` — committed to git as part of the audit trail.
 
-**2. Run.** The validator starts the application in a Docker container using `app_run_command`/`app_port` from doc0, on the shared `dev-assistant-net` network. It polls (`docker exec ... curl`) until the app responds — any HTTP response counts as ready, including 404s. If the app doesn't come up within 60 seconds, every test for this feature is marked failed with the container logs attached as the reason. Once ready, `pytest validation/{feature_id}_test.py -v` runs in a sibling container on the same network. The app container is removed afterward regardless of outcome.
+**2. Run.** If doc0's shared plan lists `services` (database, cache, etc.), the validator starts each one first — on the shared `dev-assistant-net` network, reachable by its `name` — and waits for it to accept TCP connections (bash's `/dev/tcp`, works for Postgres, Redis, MySQL, anything TCP-based). If a service doesn't come up, every test for this feature fails immediately with that service's logs as the reason, and the app is never started. Once services are ready (or if there are none), the validator starts the application using `app_run_command`/`app_port` from doc0, with `app_env` injected as environment variables (e.g. `DATABASE_URL=postgresql://postgres:postgres@db:5432/appdb` — `db` resolves via Docker DNS to the service container). It polls (`docker exec ... curl`) until the app responds — any HTTP response counts as ready, including 404s. If the app doesn't come up within 60 seconds, every test for this feature is marked failed with the container logs attached as the reason. Once ready, `pytest validation/{feature_id}_test.py -v` runs in a sibling container on the same network. The app container and every service container are removed afterward regardless of outcome — each validation run starts from a clean slate.
 
 **3. Score.** Each doc3 `test_id` maps to an expected pytest function name (`F-01-001-T01` → `test_F_01_001_T01`). The validator searches the real pytest output for `::test_F_01_001_T01 PASSED|FAILED|ERROR|SKIPPED` and records the actual result. In parallel, three deterministic checks run against the milestone report — no LLM involved:
 
@@ -696,7 +719,13 @@ The `git_node` couldn't push. Most common cause: the remote branch already exist
 The worker may not have filed the milestone report correctly, so `git_node` may not have opened the PR. Check `reports/` for the milestone file and check GitHub for a PR with the feature ID in the title. If missing, the feature can be requeued.
 
 **"App did not become ready"**
-The validator started the app with `app_run_command` but it never responded within 60 seconds. The milestone report's `validator_result.note` includes the container's last logs. Common causes: `app_run_command` is wrong for this stack (fix via plan rejection before contracts are generated, or manually correct `app_run_command`/`app_port` in doc0 and requeue), the app needs an env var that isn't set (add it to `.env` and to the `APP_`/`PORT`-prefixed allowlist in `docker/runner.py._safe_env` if needed), or the app takes longer than 60s to start (increase `APP_READY_TIMEOUT` in `docker/runner.py`).
+The validator started the app with `app_run_command` but it never responded within 60 seconds. The milestone report's `validator_result.note` includes the container's last logs. Common causes: `app_run_command` is wrong for this stack (fix via plan rejection before contracts are generated, or manually correct `app_run_command`/`app_port` in doc0 and requeue), `app_env` doesn't match the variable name your framework expects (e.g. you need `DATABASE_URL` but the app reads `DB_URL`), the app needs an env var beyond `app_env` that isn't set (add it to `.env` and to the `APP_`/`PORT`-prefixed allowlist in `docker/runner.py._safe_env` if needed), or the app takes longer than 60s to start (increase `APP_READY_TIMEOUT` in `docker/runner.py`).
+
+**"Service 'db' did not become reachable" (or similar)**
+A `services` entry from doc0 — a database, cache, etc. — started but never accepted TCP connections within 30 seconds. The note includes that container's logs. Common causes: the image tag doesn't exist (typo in `services[].image`), the service's own `env` is missing something it requires to start (e.g. Postgres refuses to start without `POSTGRES_PASSWORD`), or `services[].port` doesn't match the port the image actually listens on by default. Fix in doc0's `app_env`/`services` block directly (no need to reject the whole plan for a typo), then `python run.py retry {feature_id}`. When this fails, the app is never started — only the service is implicated.
+
+**"App did not become ready" but services started fine**
+If `services` started and became reachable but the app still doesn't come up, the app likely can't connect to the service with the given `app_env` — check the app container's logs in `validator_result.note` for connection errors (wrong hostname, wrong credentials, wrong database name). Remember: the hostname in `app_env`'s connection string must exactly match the corresponding `services[].name`.
 
 **"Generated test function not found in pytest output"**
 Gemini's generated `validation/{feature_id}_test.py` doesn't define a function named `test_<test_id_with_underscores>` matching a doc3 test_id, even after 3 correction attempts. Open the generated file — usually the spec in doc3 was too vague for a function-per-test_id mapping. Tighten the `given`/`when`/`expected` wording in doc3 to be more concrete (exact HTTP method/path/body), then requeue.
