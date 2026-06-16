@@ -1,8 +1,9 @@
 # Dockerfile.test
 # Pipeline test runner — used by:
 #   - the worker node's test_runner tool (install, lint, test, audit)
-#   - the validator: runs the application under test, and runs
-#     Gemini-generated pytest files against it over HTTP
+#   - the validator: runs the application under test (and any services —
+#     Postgres, Redis, etc.) on the shared docker network, then runs
+#     Gemini-generated pytest files against it.
 #
 # Build:  docker build -f Dockerfile.test -t dev-assistant-test .
 # Or:     python run.py docker-build
@@ -12,8 +13,12 @@
 
 FROM node:20-slim AS base
 
-# System dependencies
+# ── System packages ────────────────────────────────────────────────────────
+# Playwright's Chromium needs specific system libs; we install them here
+# alongside the general CI tools so the same image works for both API
+# (requests-based) and frontend/fullstack (Playwright-based) tests.
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Core CI tools
     python3 \
     python3-pip \
     python3-venv \
@@ -21,12 +26,41 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     bash \
     jq \
+    # Chromium system dependencies (required by Playwright)
+    libnss3 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2 \
+    libpango-1.0-0 \
+    libpangocairo-1.0-0 \
+    libgtk-3-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# pip-audit for dependency audits, pytest + requests for validator-generated tests
-RUN pip3 install --break-system-packages pip-audit pytest requests
+# ── Python tools ───────────────────────────────────────────────────────────
+# pip-audit  — dependency audit (SEC-GLOBAL-03)
+# pytest     — test runner for both API and Playwright tests
+# requests   — used by API-mode generated tests
+# playwright — Python bindings for browser tests (frontend/fullstack mode)
+RUN pip3 install --break-system-packages \
+    pip-audit \
+    pytest \
+    requests \
+    playwright \
+    pytest-playwright
 
-# GitHub CLI — used by worker to open PRs
+# ── Playwright browser (Chromium only — smallest footprint) ───────────────
+# Installs the browser binary and its OS deps into the image layer.
+# This makes validation fast: no download at test time, already in the layer.
+RUN python3 -m playwright install chromium --with-deps
+
+# ── GitHub CLI — used by git_ops.py to open and merge PRs ─────────────────
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
     && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
@@ -36,7 +70,7 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
 
-# Node global audit tools
+# ── Node tools ─────────────────────────────────────────────────────────────
 RUN npm install -g npm@latest
 
 WORKDIR /project

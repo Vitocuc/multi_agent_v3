@@ -18,11 +18,7 @@
 ---
 
 ## What we are building
-
-ProtegoPay is a B2B white-label software module for regulated online-gaming concessionaires, initially scoped as a pilot with an operator such as Sisal. The module is embedded inside the concessionaire's existing site or app and gives users voluntary budgeting, deposit monitoring, configurable alerts, short reflection pauses, spending-limit setup support and a dashboard that improves the readability of gaming-related spending. The first pilot addresses the gap between unrestricted activity and binary self-exclusion without weakening the concessionaire's existing responsible-gaming controls. ProtegoPay remains a technology supplier: it does not operate gaming accounts, handle bets, hold user funds, initiate payments under its own terms or appear as a standalone payment method. Payments remain within the concessionaire and its authorised PSP/PISP perimeter. Optional integrations with fraud-intelligence tools such as SEON or Sportradar may provide signals to the merchant's existing risk stack, but must not replace the merchant's controls. A pension or insurance journey may be assessed only in a later phase as a separate, voluntary and regulated flow outside the cashier and outside the deposit event.
-
 ---
-
 ## Domain
 
 Fintech / RegTech / responsible gaming / B2B SaaS for regulated online gaming.

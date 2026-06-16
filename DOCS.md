@@ -10,6 +10,8 @@ A pipeline that helps you build software projects. You describe the idea, the sy
 
 | Date | Change |
 |---|---|
+| 16 Jun 2026 | Added `app_type` field (`api`/`frontend`/`fullstack`) — validator generates Playwright browser tests for frontend/fullstack, requests-based HTTP tests for pure APIs |
+| 16 Jun 2026 | `Dockerfile.test` now includes Playwright + Chromium for browser-level validation |
 | 14 Jun 2026 | Added `services` + `app_env` to the shared plan — apps needing a database, cache, or queue get those started on the shared Docker network before the app, with connection env vars injected |
 | 14 Jun 2026 | Added `python run.py retry <feature_id>` — requeues a FAILED feature with the previous validator failure fed back to the worker; fixes the dead-end where a failed feature had no path forward |
 | 14 Jun 2026 | `git_ops.open_pr()` made idempotent — retries push to the same existing PR instead of erroring on "already exists" |
@@ -63,7 +65,7 @@ The pipeline has three agent roles and one pipeline role.
 **Agent roles (AI):**
 - **CTO orchestrator** — plans the project, generates contracts, decides which features to run and in what order. Uses Claude or Gemini.
 - **Worker agents** — implement one feature each via the Claude API. Tools: `file_read`, `file_write`, `test_runner`. No git access.
-- **Validator agents** — generate executable tests from the doc3 spec (Gemini, never sees source code), run them against the live application in Docker, and run deterministic security checks on the milestone report. Never touch git.
+- **Validator agents** — generate executable tests from the doc3 spec (Gemini, never sees source code): `requests`-based HTTP tests for `api` apps, Playwright browser tests for `frontend`/`fullstack` apps. Run them against the live application in Docker, score via real pytest results. Never touch git.
 
 **Pipeline role (Python, no AI):**
 - **git_ops.py** — owns all version control: branch setup, commit, push, PR creation, merge. Called by `git_node` and `merge_node` in the graph. Workers and validators have zero git access.
@@ -251,7 +253,7 @@ Review doc0_project_brief.md then run:
   python run.py resume --decision approve
 ```
 
-The shared plan now also includes `app_run_command` and `app_port` — the exact
+The shared plan now also includes `app_type` (`api`, `frontend`, or `fullstack`), `app_run_command`, and `app_port` — the exact
 command and port the CTO decided the application will use (e.g. `npm run dev`
 on port `3000`). **Check these carefully** — the validator runs this command
 verbatim in Docker to start the app and test it. If it's wrong for your stack,
@@ -486,6 +488,7 @@ The table above shows boundaries by role. This table shows the same pipeline fro
 | Worker implementation | tool execution (file I/O, Docker exec), 40-turn loop control, standing-rules loading | **all the code, all the milestone report content** | — |
 | git_node (commit/push/PR) | 100% (`git_ops.py`) | — | — |
 | Validator: test generation | doc3 parsing, function-name mapping, syntax/retry checks | generates pytest code from spec | — |
+| Validator: test generation | doc3 parsing, function-name mapping, syntax/retry checks | generates pytest code (requests or Playwright depending on app_type) | — |
 | Validator: service + app lifecycle | 100% — starts `services` (db/redis/...) and the app in Docker, TCP/HTTP readiness checks, teardown | — | — |
 | Validator: test execution + scoring | 100% — real pytest results, regex result mapping | — | — |
 | Validator: security checks | 100% (`_check_security`) | — | — |
@@ -582,7 +585,7 @@ python run.py memory F-01-002    # filtered for this feature
 
 The test image (`dev-assistant-test`) serves three purposes: the worker's `test_runner` tool (install/lint/test/audit), running the application under test, and running the validator's generated pytest files. The project directory is mounted at `/project` in every container.
 
-The image includes: Node 20, npm, Python 3, `pip-audit`, `pytest`, `requests`, GitHub CLI.
+The image includes: Node 20, npm, Python 3, `pip-audit`, `pytest`, `requests`, `playwright` (+ Chromium binary), GitHub CLI.
 
 Git commands (branch, commit, push) run on the **host machine** via `git_ops.py` — they never go through Docker.
 
@@ -645,8 +648,12 @@ Three steps, in order, for every feature:
 
 **1. Generate.** The validator extracts the doc3 test suite for this feature — `given`/`when`/`expected` written at the HTTP interface level — and sends it to Gemini with a strict instruction: write a pytest file using `requests`, one function per `test_id`, named `test_<id_with_underscores>`. Gemini never sees the implementation. If the generated code has a syntax error or is missing a required function, the validator sends a correction prompt and retries (up to 3 attempts). The generated file is saved to `validation/{feature_id}_test.py` — committed to git as part of the audit trail.
 
-**2. Run.** If doc0's shared plan lists `services` (database, cache, etc.), the validator starts each one first — on the shared `dev-assistant-net` network, reachable by its `name` — and waits for it to accept TCP connections (bash's `/dev/tcp`, works for Postgres, Redis, MySQL, anything TCP-based). If a service doesn't come up, every test for this feature fails immediately with that service's logs as the reason, and the app is never started. Once services are ready (or if there are none), the validator starts the application using `app_run_command`/`app_port` from doc0, with `app_env` injected as environment variables (e.g. `DATABASE_URL=postgresql://postgres:postgres@db:5432/appdb` — `db` resolves via Docker DNS to the service container). It polls (`docker exec ... curl`) until the app responds — any HTTP response counts as ready, including 404s. If the app doesn't come up within 60 seconds, every test for this feature is marked failed with the container logs attached as the reason. Once ready, `pytest validation/{feature_id}_test.py -v` runs in a sibling container on the same network. The app container and every service container are removed afterward regardless of outcome — each validation run starts from a clean slate.
+**2. Run.** If doc0's shared plan lists `services` (database, cache, etc.), the validator starts each one first — on the shared `dev-assistant-net` network, reachable by its `name` — and waits for it to accept TCP connections. Once services are ready (or if there are none), the validator starts the application using `app_run_command`/`app_port` from doc0, with `app_env` injected as environment variables. It polls until the app responds — any HTTP response counts as ready. Once the app is up, the test container runs on the same network:
 
+- `app_type=api`: `pytest {fid}_test.py -v` — pure `requests` calls against the API
+- `app_type=frontend` or `fullstack`: `pytest {fid}_test.py -v --browser chromium` — Playwright launches a headless Chromium inside the container and interacts with the running app's UI
+
+All containers (app + services) are removed afterward regardless of outcome — each validation run starts from a clean slate.
 **3. Score.** Each doc3 `test_id` maps to an expected pytest function name (`F-01-001-T01` → `test_F_01_001_T01`). The validator searches the real pytest output for `::test_F_01_001_T01 PASSED|FAILED|ERROR|SKIPPED` and records the actual result. In parallel, three deterministic checks run against the milestone report — no LLM involved:
 
 | Check | What it verifies |
@@ -717,6 +724,12 @@ The `git_node` couldn't push. Most common cause: the remote branch already exist
 
 **`gh-check` returns "no PR found"**
 The worker may not have filed the milestone report correctly, so `git_node` may not have opened the PR. Check `reports/` for the milestone file and check GitHub for a PR with the feature ID in the title. If missing, the feature can be requeued.
+
+**"Playwright tests fail with 'browser was not found'"**
+The Chromium binary is not installed in the test image. Rebuild with `python run.py docker-build` — the current `Dockerfile.test` runs `playwright install chromium --with-deps` during the build, so this only happens if you're using an old image. After rebuilding, the binary is baked into the layer and no download happens at test time.
+
+**"Playwright test fails with 'TimeoutError: waiting for locator'"**
+The element the test is looking for didn't appear within Playwright's default timeout. This usually means either the navigation or action in the previous step failed silently. Open `validation/{feature_id}_test.py` — the generated test should have intermediate assertions. If the spec's `expected` was vague (e.g. "page shows success"), the generated locator may be wrong. Tighten the `expected` wording in doc3 (e.g. "heading 'Welcome' with text 'Registration complete' is visible") and retry.
 
 **"App did not become ready"**
 The validator started the app with `app_run_command` but it never responded within 60 seconds. The milestone report's `validator_result.note` includes the container's last logs. Common causes: `app_run_command` is wrong for this stack (fix via plan rejection before contracts are generated, or manually correct `app_run_command`/`app_port` in doc0 and requeue), `app_env` doesn't match the variable name your framework expects (e.g. you need `DATABASE_URL` but the app reads `DB_URL`), the app needs an env var beyond `app_env` that isn't set (add it to `.env` and to the `APP_`/`PORT`-prefixed allowlist in `docker/runner.py._safe_env` if needed), or the app takes longer than 60s to start (increase `APP_READY_TIMEOUT` in `docker/runner.py`).

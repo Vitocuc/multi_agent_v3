@@ -7,6 +7,7 @@ Each method = one atomic model call with typed, validated output.
 from __future__ import annotations
 import json
 import re
+import yaml
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -14,7 +15,7 @@ from llm.router  import call, user_msg, assistant_msg
 from llm.retry   import call_structured
 from schemas.cto_outputs import (
     ClarificationQuestion, SharedPlan, FeatureBlock,
-    SpawnPlan, ContractConsistencyCheck,
+    SpawnPlan, ContractConsistencyCheck, ServiceSpec,
 )
 from schemas.graph_state  import FeatureContext, GraphState
 from memory import store as mem_store
@@ -35,11 +36,28 @@ _CLARIFY_SYS = _BASE + (
 _PLAN_SYS = _BASE + (
     "\nTask: write a complete shared plan. All tech_stack fields must be filled. "
     "No TBD. Be specific enough that a developer can start immediately. "
+    "\n\n"
+    "You must decide app_type — one of:\n"
+    "  'api'       — pure backend (REST/GraphQL/gRPC). No browser UI served.\n"
+    "  'frontend'  — client-side only (SPA, static site). No significant API.\n"
+    "  'fullstack' — serves both UI and API from the same process "
+    "(Next.js, Nuxt, Django+templates, Rails, Laravel, etc.)\n\n"
+    "This determines how the validator tests the app:\n"
+    "  api       → pytest + requests (HTTP assertions)\n"
+    "  frontend / fullstack → Playwright (browser-level: click, fill, assert on DOM)\n\n"
     "You must also decide app_run_command (the exact shell command that starts "
     "the application in development mode, e.g. 'npm run dev' or "
     "'uvicorn main:app --host 0.0.0.0 --port 8000') and app_port (the integer "
     "port it listens on) — the validator runs this command in Docker and tests "
-    "against it, so it must be concrete and correct for the chosen tech stack."
+    "against it, so it must be concrete and correct for the chosen tech stack.\n\n"
+    "If the application needs a database, cache, queue, or any other backing "
+    "service to run, list each one in `services`: a name (lowercase, used as both "
+    "the Docker container name and DNS hostname — e.g. 'db', 'redis'), a "
+    "concrete image (e.g. 'postgres:16-alpine', 'redis:7-alpine'), the port it "
+    "listens on, and any env vars the SERVICE container itself needs. "
+    "Then set `app_env` to the env vars the APPLICATION needs to connect to "
+    "those services, using the service `name` as the hostname. "
+    "If the app needs nothing beyond itself, leave services and app_env empty."
 )
 
 _CONTRACT_SYS = _BASE + (
@@ -81,12 +99,16 @@ def write_plan(history: List[Dict], provider: str, root: Path = ROOT) -> SharedP
     doc0 = (root / "doc0_project_brief.md").read_text()
     msgs = [user_msg(
         f"Project brief + clarification log:\n\n{doc0}\n\n"
-        "Return a SharedPlan JSON: {summary, key_decisions, open_assumptions, "
-        "tech_stack, scope_boundary, first_milestone, app_run_command, app_port}. "
-        "app_run_command: exact shell command to start the app in dev mode "
-        "(e.g. 'npm run dev', 'uvicorn main:app --host 0.0.0.0 --port 8000', "
-        "'python manage.py runserver 0.0.0.0:8000'). "
-        "app_port: integer port the app listens on, matching app_run_command."
+        "Return a SharedPlan JSON with ALL fields: "
+        "{summary, key_decisions, open_assumptions, tech_stack, scope_boundary, "
+        "first_milestone, app_type, app_run_command, app_port, app_env, services}.\n\n"
+        "app_type: 'api' (pure backend), 'frontend' (client-side only), or "
+        "'fullstack' (serves both UI and API — Next.js, Nuxt, Django+templates, etc.).\n"
+        "app_run_command: exact shell command to start in dev mode.\n"
+        "app_port: integer port it listens on.\n"
+        "services: list of {name, image, port, env} for any database/cache/queue "
+        "needed (empty list if none).\n"
+        "app_env: env vars the app needs to connect to those services (empty dict if none)."
     )] + history
     plan = call_structured(provider, msgs, _PLAN_SYS, SharedPlan, label="SharedPlan")
     _write_plan_to_doc0(root, plan)
@@ -99,7 +121,9 @@ def revise_plan(history: List[Dict], rejection_note: str,
     msgs = [user_msg(
         f"Brief:\n\n{doc0}\n\nRejection note: {rejection_note}\n\n"
         "Revise the SharedPlan to address the feedback. Return SharedPlan JSON "
-        "with all fields including app_run_command and app_port."
+        "with ALL fields: summary, key_decisions, open_assumptions, tech_stack, "
+        "scope_boundary, first_milestone, app_type, app_run_command, app_port, "
+        "app_env, services."
     )] + history
     plan = call_structured(provider, msgs, _PLAN_SYS, SharedPlan, label="SharedPlan (revision)")
     _write_plan_to_doc0(root, plan)
@@ -163,25 +187,56 @@ def generate_contracts(provider: str, root: Path = ROOT) -> Dict:
     ], indent=2)
 
     # ── Validation contract ──────────────────────────────────────────────────
+    # Determine test format based on app_type so doc3 cases are the right shape
+    # for the validator's code-gen prompt.
+    app_type = "api"
+    app_type_m = re.search(r'app_type:\s*"?([\w]+)"?', doc0)
+    if app_type_m:
+        app_type = app_type_m.group(1).lower()
+
+    if app_type == "api":
+        interface_rule = (
+            "CRITICAL: for feature-specific tests, given/when/expected must be written "
+            "at the HTTP INTERFACE level (HTTP method + path + request body/headers, and "
+            "expected status code + response body shape) — concrete enough that someone "
+            "who has NEVER seen the source code could write a `requests`-based pytest "
+            "test from this description alone. Example:\n"
+            "  given: \"no user exists with email a@b.com\"\n"
+            "  when: \"POST /api/users {email: a@b.com, password: secret123}\"\n"
+            "  expected: \"201 Created, body contains id and email, no password field\""
+        )
+    else:
+        interface_rule = (
+            "CRITICAL: the app_type is '" + app_type + "', so tests will run in a "
+            "real browser via Playwright. For feature-specific tests, given/when/expected "
+            "must be written at the BROWSER INTERACTION level — what a user sees, clicks, "
+            "and types in the UI — concrete enough that someone who has NEVER seen the "
+            "source code could write a Playwright test from this description alone. "
+            "Use the running app's URL (already known to the test generator). Example:\n"
+            "  given: \"user is on the registration page at /register\"\n"
+            "  when: \"user fills in email 'a@b.com', password 'secret123', clicks Submit\"\n"
+            "  expected: \"page navigates to /dashboard, heading 'Welcome' is visible\"\n\n"
+            "Security tests that are best verified at the API level (e.g. rate limiting, "
+            "auth headers) may still use HTTP-level given/when/expected — mark those "
+            "with verified_via: executable_test_api so the generator uses requests for them."
+        )
+
     val_raw = call(provider, [user_msg(
         f"Feature acceptance criteria from doc2:\n{criteria_summary}\n\n"
+        f"app_type: {app_type}\n\n"
         "Generate a complete, filled doc3_validation_contract.md.\n\n"
         "Rules:\n"
         "- Every feature in doc2 must have a Suite block (suite_id = feature_id)\n"
         "- Every acceptance criterion must appear as a test case\n"
         "- Every suite must include at least one security test (type: security)\n"
-        "- CRITICAL: for feature-specific tests, given/when/expected must be written "
-        "at the INTERFACE level (HTTP method + path + request body/headers, and "
-        "expected status code + response body shape) — concrete enough that someone "
-        "who has NEVER seen the source code could write an automated test from this "
-        "description alone, calling the running application over HTTP\n"
+        f"- {interface_rule}\n"
         "- verified_via for feature-specific tests: 'executable_test' "
-        "(a test generator will turn given/when/expected into real pytest code "
-        "and run it against the live application)\n"
+        "(the validator generates real test code from given/when/expected and runs it "
+        "against the live application — requests-based for 'api', "
+        "Playwright-based for 'frontend'/'fullstack')\n"
         "- verified_via for the three global security tests stays milestone-report-based "
         "(e.g. milestone_report.security_checklist_followed, "
-        "milestone_report.commands_run[*].exit_code) — these are checked deterministically, "
-        "not via HTTP\n"
+        "milestone_report.commands_run[*].exit_code) — these are checked deterministically\n"
         "- Always include SEC-GLOBAL-01, SEC-GLOBAL-02, SEC-GLOBAL-03 exactly as in the template\n"
         "- human_gate_required: true for auth, PII, payment features\n"
         "- Reproduce the exact template structure below, filled for this project\n\n"
@@ -304,8 +359,20 @@ def _write_plan_to_doc0(root: Path, plan: SharedPlan) -> None:
         "".join(f"  {k}: {v}\n" for k, v in plan.tech_stack.items()) +
         f'\nscope_boundary: "{plan.scope_boundary}"\n'
         f'first_milestone: "{plan.first_milestone}"\n'
+        f'app_type: "{plan.app_type}"\n'
         f'app_run_command: "{plan.app_run_command}"\n'
         f"app_port: {plan.app_port}\n"
+        f"\n"
+        f"# Auxiliary services (databases, caches, queues) and env vars the\n"
+        f"# application needs. The validator starts every service on the shared\n"
+        f"# Docker network, waits for each to be reachable, then starts the app\n"
+        f"# with app_env injected, so the app can reach services by their `name`.\n"
+        f"```yaml\n"
+        + yaml.dump({
+            "app_env":  plan.app_env,
+            "services": [s.model_dump() for s in plan.services],
+        }, sort_keys=False, default_flow_style=False)
+        + "```\n"
     )
     text = re.sub(r"shared_plan_approved: false.*$", block, text, flags=re.DOTALL)
     doc0.write_text(text)
@@ -313,20 +380,43 @@ def _write_plan_to_doc0(root: Path, plan: SharedPlan) -> None:
 
 def get_app_config(root: Path = ROOT) -> Dict[str, object]:
     """
-    Read app_run_command and app_port from the approved shared plan in doc0.
-    Used by the validator to start the application for executable tests.
-    Returns {"run_command": "", "port": 0} if not found.
+    Read the application's runtime config from the approved shared plan in doc0:
+    app_type, run_command, port, env vars, and auxiliary services (db, cache, etc.)
+    Used by the validator to know HOW to test (Playwright vs requests) and
+    WHAT to start before running tests.
+    Returns empty/zero/api defaults if not found.
     """
+    default: Dict[str, object] = {
+        "app_type":    "api",
+        "run_command": "",
+        "port":        0,
+        "env":         {},
+        "services":    [],
+    }
+
     doc0 = root / "doc0_project_brief.md"
     if not doc0.exists():
-        return {"run_command": "", "port": 0}
+        return default
     text = doc0.read_text()
+
+    type_m = re.search(r'app_type:\s*"?([\w]+)"?', text)
     cmd_m  = re.search(r'app_run_command:\s*"(.*?)"', text)
     port_m = re.search(r"app_port:\s*(\d+)", text)
-    return {
-        "run_command": cmd_m.group(1) if cmd_m else "",
-        "port":        int(port_m.group(1)) if port_m else 0,
-    }
+
+    default["app_type"]    = type_m.group(1).lower() if type_m else "api"
+    default["run_command"] = cmd_m.group(1) if cmd_m else ""
+    default["port"]        = int(port_m.group(1)) if port_m else 0
+
+    yaml_m = re.search(r"```yaml\n(app_env:.*?)\n```", text, re.DOTALL)
+    if yaml_m:
+        try:
+            extra = yaml.safe_load(yaml_m.group(1)) or {}
+            default["env"]      = extra.get("app_env", {}) or {}
+            default["services"] = extra.get("services", []) or []
+        except yaml.YAMLError:
+            pass
+
+    return default
 
 
 def _save(root: Path, filename: str, content: str) -> None:

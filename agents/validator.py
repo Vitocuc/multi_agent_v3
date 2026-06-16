@@ -5,20 +5,18 @@ Validator node — generates executable tests from doc3 and runs them against
 the live application. Real exit codes determine pass/fail, not LLM opinion.
 
 Flow:
-  1. Read ONLY the doc3 test suite for this feature (interface-level specs:
-     HTTP method/path/body -> expected status/response). Never source code.
-  2. Generate a pytest file implementing each test case as a real HTTP test
-     (Gemini — pure code generation, never sees the implementation).
-  3. Start the application in Docker (app_run_command/app_port from doc0),
-     wait until it responds.
-  4. Run the generated tests against the running app in a sibling container
-     on the shared docker network.
-  5. Map each doc3 test_id to its real pytest result (PASSED/FAILED/ERROR/SKIPPED).
-  6. Run three deterministic security checks (pure Python, no LLM) against
-     the milestone report — no secrets in logs, security checklist followed,
-     dependency audit clean.
-  7. overall=pass only if every blocking test_id actually passed AND the
-     deterministic security checks pass.
+  1. Read ONLY the doc3 test suite for this feature. Never source code.
+  2. Generate a pytest file from the spec (Gemini — never sees implementation):
+       app_type=api        → pytest + requests  (HTTP assertions)
+       app_type=frontend   → pytest + Playwright (browser interactions)
+       app_type=fullstack  → Playwright for UI tests, requests for API-level
+                             security tests marked verified_via: executable_test_api
+  3. Start any required services (db, cache, ...) on the shared Docker network.
+  4. Start the app with app_env injected, wait until it responds.
+  5. Run the generated tests against the live app.
+  6. Map each doc3 test_id → real pytest PASSED/FAILED/ERROR/SKIPPED.
+  7. Three deterministic security checks (pure Python, no LLM).
+  8. overall=pass only if every blocking test passes AND security checks pass.
 
 Zero git access. Never modifies application source.
 """
@@ -40,12 +38,12 @@ CODEGEN_MAX_ATTEMPTS = 3
 
 
 # ---------------------------------------------------------------------------
-# Code generation — Gemini sees only the doc3 spec, never source code
+# Code generation system prompts — one per test strategy
 # ---------------------------------------------------------------------------
 
-_CODEGEN_SYSTEM = """You write executable pytest test files from API-level specifications.
+_CODEGEN_API = """You write executable pytest test files from HTTP API specifications.
 
-You have NEVER seen the implementation source code. You only know the specification given to you.
+You have NEVER seen the implementation source code. You only know the specification.
 
 Rules:
 1. Output a SINGLE Python file using pytest and the `requests` library. Nothing else.
@@ -53,16 +51,57 @@ Rules:
 3. For EVERY test case listed, write exactly one function with the exact name given to you.
    Do not rename, merge, or split these functions.
 4. Implement given/when/expected as a real HTTP interaction:
-   - "given"    = any setup needed before the action (e.g. create a resource via the API first)
-   - "when"     = the HTTP request described (method, path, body, headers)
-   - "expected" = assert on status code and/or response body matching the description
-5. If a test case describes something that cannot be checked via HTTP
-   (e.g. log output, internal checklists, code style, non-functional concerns), write:
+   - "given"    = any setup (e.g. create a resource via the API first)
+   - "when"     = the HTTP request (method, path, body, headers)
+   - "expected" = assert on status code and/or response body
+5. If a test case cannot be checked via HTTP (log output, internal checklists, etc.), write:
      def test_<id>():
          pytest.skip("not verifiable via HTTP — checked separately")
 6. Use descriptive assert messages so failures are readable.
 7. Output ONLY raw Python code. No markdown fences, no prose, no explanation.
 8. The file must run standalone with: pytest <file> -v"""
+
+_CODEGEN_PLAYWRIGHT = """You write executable pytest test files using Playwright for browser-level testing.
+
+You have NEVER seen the implementation source code. You only know the specification.
+
+Rules:
+1. Output a SINGLE Python file using pytest and playwright.sync_api. Nothing else.
+2. Import at top: from playwright.sync_api import sync_playwright, expect
+3. The application under test is reachable at the base_url given to you.
+4. For EVERY test case listed, write exactly one function with the exact name given to you.
+   Do not rename, merge, or split these functions.
+5. Each function must use sync_playwright as a context manager:
+     def test_<id>():
+         with sync_playwright() as p:
+             browser = p.chromium.launch()
+             page = browser.new_page()
+             page.goto(base_url + "/path")
+             # ... interactions and assertions ...
+             browser.close()
+6. Implement given/when/expected as real browser interactions:
+   - "given"    = navigation or precondition setup (page.goto, fill a form, etc.)
+   - "when"     = user action (page.click, page.fill, page.press, etc.)
+   - "expected" = assertion (expect(page.locator(...)).to_be_visible(),
+                              expect(page).to_have_url(...), etc.)
+7. For test cases marked verified_via: executable_test_api, use requests instead
+   of Playwright — these are HTTP-level assertions (auth headers, rate limits, etc.):
+     import requests
+     def test_<id>():
+         r = requests.get(base_url + "/api/endpoint")
+         assert r.status_code == 401
+8. If a test case cannot be verified in a browser (internal checklists, etc.), write:
+     def test_<id>():
+         pytest.skip("not verifiable via browser — checked separately")
+9. Use descriptive assert messages so failures are readable.
+10. Output ONLY raw Python code. No markdown fences, no prose, no explanation.
+11. The file must run standalone with: pytest <file> -v --browser chromium"""
+
+_CODEGEN_SYSTEM_BY_TYPE = {
+    "api":       _CODEGEN_API,
+    "frontend":  _CODEGEN_PLAYWRIGHT,
+    "fullstack": _CODEGEN_PLAYWRIGHT,
+}
 
 
 def _strip_fences(text: str) -> str:
@@ -76,21 +115,27 @@ def _generate_test_code(
     feature_id: str,
     test_cases: List[Dict],
     base_url:   str,
+    app_type:   str,
     provider:   str,
 ) -> str:
     """
     Generate a pytest file from doc3 test case specs.
-    Retries up to CODEGEN_MAX_ATTEMPTS if the output is invalid Python or is
-    missing required test function names. Returns best-effort code after
-    exhausting attempts.
+    Strategy switches on app_type:
+      api        → requests-based HTTP tests
+      frontend   → Playwright browser tests
+      fullstack  → Playwright + requests for API-level security cases
+    Retries up to CODEGEN_MAX_ATTEMPTS on syntax errors or missing functions.
     """
+    system      = _CODEGEN_SYSTEM_BY_TYPE.get(app_type, _CODEGEN_API)
     required_fns = {tc["test_id"]: f"test_{tc['test_id'].replace('-', '_')}" for tc in test_cases}
 
     spec_text = "\n\n".join(tc["raw"] for tc in test_cases)
     fn_list   = "\n".join(f"- {tid} -> def {fn}(...)" for tid, fn in required_fns.items())
 
     prompt = (
-        f"Base URL of the running application: {base_url}\n\n"
+        f"Base URL of the running application: {base_url}\n"
+        f"Test strategy: {app_type} "
+        f"({'requests HTTP calls' if app_type == 'api' else 'Playwright browser interactions'})\n\n"
         f"Test case specifications (from doc3, the validation contract):\n{spec_text}\n\n"
         f"Required function names (use these exactly):\n{fn_list}\n\n"
         "Generate the pytest file now."
@@ -100,7 +145,7 @@ def _generate_test_code(
     last_code = ""
 
     for attempt in range(1, CODEGEN_MAX_ATTEMPTS + 1):
-        raw  = call(provider, messages, _CODEGEN_SYSTEM, temperature=0.2, max_tokens=8192)
+        raw  = call(provider, messages, system, temperature=0.2, max_tokens=8192)
         code = _strip_fences(raw)
         last_code = code
 
@@ -122,7 +167,7 @@ def _generate_test_code(
 
         return code
 
-    return last_code  # best effort after exhausting retries
+    return last_code
 
 
 # ---------------------------------------------------------------------------
@@ -246,63 +291,108 @@ def run(
     test_cases  = _parse_test_cases(yaml_text)
 
     app_config = get_app_config(root)
-    app_cmd    = app_config["run_command"]
-    app_port   = app_config["port"]
+    app_type     = app_config.get("app_type", "api")
+    app_cmd      = app_config["run_command"]
+    app_port     = app_config["port"]
+    app_env      = app_config.get("env", {}) or {}
+    services     = app_config.get("services", []) or []
 
     container_name = f"app-{feature_id.lower()}"
-    base_url       = f"http://{container_name}:{app_port}"
+    base_url        = f"http://{container_name}:{app_port}"
 
     results:     List[Dict] = []
     runtime_note = ""
 
     if test_cases and app_cmd and app_port:
         # 1. Generate executable tests from doc3 — Gemini sees only the spec
-        test_code = _generate_test_code(feature_id, test_cases, base_url, provider)
+        test_code = _generate_test_code(feature_id, test_cases, base_url, app_type, provider)
 
         validation_dir = root / "validation"
         validation_dir.mkdir(exist_ok=True)
         (validation_dir / f"{feature_id}_test.py").write_text(test_code)
 
-        # 2. Start the app and run the generated tests against it
+        # pytest command varies by app_type:
+        # - api: plain pytest (requests-based)
+        # - frontend/fullstack: add --headed=no and chromium (headless already default in Playwright)
+        rel_path = f"validation/{feature_id}_test.py"
+        if app_type == "api":
+            pytest_cmd = f"python3 -m pytest {rel_path} -v --tb=short -p no:cacheprovider"
+        else:
+            pytest_cmd = (
+                f"python3 -m pytest {rel_path} -v --tb=short -p no:cacheprovider "
+                f"--browser chromium"
+            )
+
+        # 2. Start any required services (db, cache, ...), then the app, then run tests
         runner = DockerRunner(root=root)
+        started_services: List[str] = []
         try:
             runner.verify()
-            runner.start_app(app_cmd, app_port, container_name)
-            ready = runner.wait_for_app(container_name, app_port)
 
-            if not ready:
-                logs = runner.get_app_logs(container_name)
-                runtime_note = f"App did not become ready. Last logs:\n{logs[-800:]}"
+            # 2a. Start auxiliary services first — the app needs them to start successfully
+            services_ready = True
+            for svc in services:
+                sr = runner.start_service(svc)
+                svc_container = svc["name"]
+                started_services.append(svc_container)
+                if not sr.success:
+                    runtime_note = f"Service '{svc_container}' failed to start: {sr.summary}"
+                    services_ready = False
+                    break
+                if not runner.wait_for_service(svc_container, svc["port"]):
+                    logs = runner.get_app_logs(svc_container)
+                    runtime_note = (
+                        f"Service '{svc_container}' ({svc['image']}) did not become "
+                        f"reachable on port {svc['port']}. Last logs:\n{logs[-500:]}"
+                    )
+                    services_ready = False
+                    break
+
+            if not services_ready:
                 for tc in test_cases:
                     results.append({
                         "test_id": tc["test_id"], "status": "fail",
-                        "notes": "app did not start — see milestone report note",
+                        "notes": "a required service did not start — see milestone report note",
                         "type": tc["type"], "blocking": tc["blocking"],
                     })
             else:
-                rel_path = f"validation/{feature_id}_test.py"
-                pr = runner.run(
-                    f"python3 -m pytest {rel_path} -v --tb=short -p no:cacheprovider",
-                    network=runner.network,
-                )
-                output = pr.stdout + pr.stderr
-                runtime_note = f"pytest exit {pr.exit_code}"
+                # 2b. Start the app, with app_env pointing at the services by name
+                runner.start_app(app_cmd, app_port, container_name, extra_env=app_env)
+                ready = runner.wait_for_app(container_name, app_port)
 
-                for tc in test_cases:
-                    fn = f"test_{tc['test_id'].replace('-', '_')}"
-                    m  = re.search(rf"::{re.escape(fn)}\s+(PASSED|FAILED|ERROR|SKIPPED)", output)
-                    if m:
-                        status_raw = m.group(1)
-                        status = {"PASSED": "pass", "FAILED": "fail",
-                                  "ERROR": "fail", "SKIPPED": "skip"}[status_raw]
-                        note = "" if status != "fail" else _extract_failure_reason(output, fn)
-                    else:
-                        status = "fail"
-                        note   = "generated test function not found in pytest output"
-                    results.append({
-                        "test_id": tc["test_id"], "status": status, "notes": note,
-                        "type": tc["type"], "blocking": tc["blocking"],
-                    })
+                if not ready:
+                    logs = runner.get_app_logs(container_name)
+                    runtime_note = f"App did not become ready. Last logs:\n{logs[-800:]}"
+                    for tc in test_cases:
+                        results.append({
+                            "test_id": tc["test_id"], "status": "fail",
+                            "notes": "app did not start — see milestone report note",
+                            "type": tc["type"], "blocking": tc["blocking"],
+                        })
+                else:
+                    # 2c. Run the generated tests against the live app
+                    pr = runner.run(
+                        pytest_cmd,
+                        network=runner.network,
+                    )
+                    output = pr.stdout + pr.stderr
+                    runtime_note = f"pytest exit {pr.exit_code}"
+
+                    for tc in test_cases:
+                        fn = f"test_{tc['test_id'].replace('-', '_')}"
+                        m  = re.search(rf"::{re.escape(fn)}\s+(PASSED|FAILED|ERROR|SKIPPED)", output)
+                        if m:
+                            status_raw = m.group(1)
+                            status = {"PASSED": "pass", "FAILED": "fail",
+                                      "ERROR": "fail", "SKIPPED": "skip"}[status_raw]
+                            note = "" if status != "fail" else _extract_failure_reason(output, fn)
+                        else:
+                            status = "fail"
+                            note   = "generated test function not found in pytest output"
+                        results.append({
+                            "test_id": tc["test_id"], "status": status, "notes": note,
+                            "type": tc["type"], "blocking": tc["blocking"],
+                        })
 
         except (DockerNotAvailableError, ImageNotBuiltError) as e:
             runtime_note = str(e)
@@ -317,6 +407,11 @@ def run(
                 runner.stop_app(container_name)
             except Exception:
                 pass
+            for svc_container in started_services:
+                try:
+                    runner.stop_service(svc_container)
+                except Exception:
+                    pass
 
     elif not (app_cmd and app_port):
         runtime_note = (

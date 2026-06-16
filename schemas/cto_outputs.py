@@ -5,8 +5,40 @@ Typed outputs for every CTO model call.
 Code validates these — not prompts.
 """
 from __future__ import annotations
+import re
 from typing import List, Dict, Optional
 from pydantic import BaseModel, Field, field_validator
+
+
+class ServiceSpec(BaseModel):
+    """
+    An auxiliary service the application needs at runtime — a database,
+    cache, queue, etc. The validator starts these on the shared Docker
+    network before starting the app, so the app can reach them by `name`.
+    """
+    name:  str                 # hostname on the shared network — e.g. "db", "redis"
+    image: str                 # docker image — e.g. "postgres:16-alpine", "redis:7-alpine"
+    port:  int                 # port the service listens on, for the readiness check
+    env:   Dict[str, str] = {} # env vars for the SERVICE container itself
+                                # (e.g. POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB)
+
+    @field_validator("name")
+    @classmethod
+    def valid_hostname(cls, v: str) -> str:
+        if not re.match(r"^[a-z][a-z0-9-]*$", v):
+            raise ValueError(
+                f"service name '{v}' must be lowercase letters/digits/hyphens, "
+                "starting with a letter — it's used as a Docker container "
+                "name and DNS hostname on the shared network"
+            )
+        return v
+
+    @field_validator("port")
+    @classmethod
+    def valid_port(cls, v: int) -> int:
+        if not (1 <= v <= 65535):
+            raise ValueError(f"service port must be between 1 and 65535, got {v}")
+        return v
 
 
 class ClarificationQuestion(BaseModel):
@@ -35,8 +67,26 @@ class SharedPlan(BaseModel):
     tech_stack:       Dict[str, str]
     scope_boundary:   str
     first_milestone:  str
+    app_type:         str               # "api" | "frontend" | "fullstack"
     app_run_command:  str
     app_port:         int
+    app_env:          Dict[str, str]    = {}
+    services:         List[ServiceSpec] = []
+
+    @field_validator("app_type")
+    @classmethod
+    def valid_app_type(cls, v: str) -> str:
+        v = v.strip().lower()
+        allowed = {"api", "frontend", "fullstack"}
+        if v not in allowed:
+            raise ValueError(
+                f"app_type must be one of {allowed}, got '{v}'. "
+                "Use 'api' for a pure backend/REST/GraphQL service, "
+                "'frontend' for a client-side-only app (SPA, static site), "
+                "or 'fullstack' for an app that serves both UI and API "
+                "(Next.js, Nuxt, Django+templates, Rails, etc.)"
+            )
+        return v
 
     @field_validator("tech_stack")
     @classmethod

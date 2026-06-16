@@ -47,52 +47,54 @@ human_gate_required:    false         # true for high-risk or architectural feat
 
 **Test cases**
 
-Feature-specific test cases must be written at the INTERFACE level — concrete
-HTTP method, path, request body, and expected status/response — so they can be
-turned into executable tests by someone who has never seen the implementation.
+For `app_type: api` — write given/when/expected at the HTTP interface level
+(method, path, body, expected status and response shape).
+
+For `app_type: frontend` or `fullstack` — write given/when/expected at the
+browser interaction level (what a user navigates to, clicks, types, and sees).
+For API-level security checks in a frontend/fullstack app, mark
+`verified_via: executable_test_api` so the generator uses `requests` instead.
 
 ```yaml
+# ── API example ──────────────────────────────────────────────────────────
 - test_id:      F-01-001-T01
   type:         unit
   blocking:     true
   description:  >
-    [Plain-language description of what is being verified.
-     Written before implementation — pure spec, no code.]
-  given:        "[preconditions — e.g. 'no user exists with email a@b.com']"
-  when:         "[concrete HTTP call — e.g. 'POST /api/users with body {email, password}']"
-  expected:     "[concrete response — e.g. '201 Created, body contains id and email, no password field']"
-  verified_via: executable_test    # a pytest file is generated from this spec and run against the live app
+    User can register with a valid email and password.
+  given:        "no user exists with email a@b.com"
+  when:         "POST /api/users with body {email: a@b.com, password: secret123}"
+  expected:     "201 Created, body contains id and email, no password field"
+  verified_via: executable_test
 
+# ── Frontend / fullstack example ─────────────────────────────────────────
 - test_id:      F-01-001-T02
   type:         integration
   blocking:     true
   description:  >
-    [Integration test: two or more components working together,
-     described as a sequence of HTTP calls]
-  given:        ""
-  when:         ""
-  expected:     ""
+    User can complete the registration form and reach the dashboard.
+  given:        "user is on the /register page"
+  when:         "user fills email 'a@b.com' and password 'secret123', clicks the Register button"
+  expected:     "page navigates to /dashboard, heading 'Welcome' is visible"
   verified_via: executable_test
 
+# ── Security (HTTP-level, even in frontend/fullstack apps) ───────────────
 - test_id:      F-01-001-T03
   type:         security
   blocking:     true
   description:  >
-    [Security behaviour testable via HTTP — e.g. accessing a protected
-     route without auth returns 401, invalid input returns 400 not 500]
-  given:        "[e.g. 'no Authorization header is provided']"
-  when:         "[e.g. 'GET /api/profile is called']"
-  expected:     "[e.g. '401 Unauthorized, no internal error details in body']"
-  verified_via: executable_test
+    Protected API route returns 401 without authentication.
+  given:        "no Authorization header is provided"
+  when:         "GET /api/profile"
+  expected:     "401 Unauthorized, no internal error details in body"
+  verified_via: executable_test_api   # always requests-based, even in frontend apps
 
 - test_id:      F-01-001-T04
   type:         regression
   blocking:     false
   description:  >
-    [Check that this feature does not break any previously passing features.
-     Add specific regressions discovered during earlier milestones here.
-     Write as an HTTP-level check if testable, otherwise mark verified_via
-     as milestone_report and describe what to look for in commands_run.]
+    [Check that this feature does not break previously passing features.
+     Write at the same interface level as the other tests in this suite.]
   given:        ""
   when:         ""
   expected:     ""

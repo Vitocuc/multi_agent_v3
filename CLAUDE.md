@@ -54,19 +54,53 @@ Never implement work that belongs to another feature_id.
 
 ## Your implementation must be runnable
 
-`doc0_project_brief.md` specifies `app_run_command` and `app_port` in the shared
-plan — the exact command and port the application uses in development.
+`doc0_project_brief.md` specifies `app_type`, `app_run_command`, and `app_port`
+in the shared plan. **Read these before implementing anything.**
 
-The validator starts your implementation with this exact command and runs
-generated tests against `http://localhost:{app_port}`. If the app does not
-start cleanly with `app_run_command`, every test for this feature fails
-regardless of code correctness.
+`app_type` tells you which test strategy the validator uses:
 
-Before filing your milestone report, verify via `test_runner` that
-`app_run_command` actually starts the application and it responds on
-`app_port`. If your implementation needs environment variables to start,
-document them in `.env.example` and ensure sensible defaults exist for
-the test environment.
+- `api` — pure backend. Tests call your HTTP endpoints with `requests`.
+  Implement a REST/GraphQL/etc. API. The UI (if any) is out of scope.
+- `frontend` — client-side app. Tests drive a real Chromium browser with
+  Playwright. Implement the UI. The dev server must serve it on `app_port`.
+- `fullstack` — serves both UI and API from the same process. Playwright
+  drives browser-level tests; API-level security checks use `requests`.
+
+The validator starts your implementation with `app_run_command`, waits until
+`http://localhost:{app_port}/` responds, then runs generated tests.
+If the app does not start cleanly, every test fails regardless of code quality.
+
+### If the app needs a database, cache, or other service
+
+doc0's shared plan also has a fenced `app_env`/`services` block. If `services`
+is non-empty, the validator starts those containers (e.g. Postgres, Redis)
+on the same Docker network before starting your app, and injects `app_env`
+as environment variables — e.g. `DATABASE_URL=postgresql://postgres:postgres@db:5432/appdb`.
+
+**Your implementation must read its connection config from these env vars**,
+not from hardcoded values. Use exactly the variable names listed in `app_env`.
+
+Your own `test_runner` phases (install/lint/test/audit) do **not** have these
+services running — write unit tests against an in-memory or sqlite fallback
+when the relevant env var isn't set, so `test_runner phase=test` passes
+without a live database. The validator's executable tests are what exercise
+the real service connections — your job is to make sure the connection code
+itself is correct and configurable via `app_env`.
+
+If `services` is empty, verify via `test_runner` that `app_run_command`
+actually starts the application and it responds on `app_port` before
+filing your milestone report.
+
+If `services` is non-empty, you cannot fully replicate the validator's
+environment from `test_runner` — there's no database to connect to.
+Write your connection code so the app can still bind to `app_port` even
+if the database is briefly unreachable at startup (lazy connection /
+connection pool, not a blocking connect-before-listen) — this lets the
+validator's readiness check succeed once the real database container is
+up. If your framework requires an eager connection at boot, that's fine
+too, but say so explicitly in `issues_discovered` so a failed validation
+run is easy to diagnose. If your implementation needs environment
+variables beyond `app_env`, document them in `.env.example`.
 
 ---
 
