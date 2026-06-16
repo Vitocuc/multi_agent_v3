@@ -175,7 +175,7 @@ def _generate_test_code(
 # ---------------------------------------------------------------------------
 
 def _extract_suite(feature_id: str, root: Path) -> str:
-    doc3 = root / "doc3_validation_contract.md"
+    doc3 = root / "contracts" / "doc3_validation_contract.md"
     if not doc3.exists():
         return ""
     text = doc3.read_text()

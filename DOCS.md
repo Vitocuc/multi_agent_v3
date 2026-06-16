@@ -13,12 +13,12 @@ A pipeline that helps you build software projects. You describe the idea, the sy
 | 16 Jun 2026 | Added `app_type` field (`api`/`frontend`/`fullstack`) — validator generates Playwright browser tests for frontend/fullstack, requests-based HTTP tests for pure APIs |
 | 16 Jun 2026 | `Dockerfile.test` now includes Playwright + Chromium for browser-level validation |
 | 14 Jun 2026 | Added `services` + `app_env` to the shared plan — apps needing a database, cache, or queue get those started on the shared Docker network before the app, with connection env vars injected |
-| 14 Jun 2026 | Added `python run.py retry <feature_id>` — requeues a FAILED feature with the previous validator failure fed back to the worker; fixes the dead-end where a failed feature had no path forward |
+| 14 Jun 2026 | Added `python3 run.py retry <feature_id>` — requeues a FAILED feature with the previous validator failure fed back to the worker; fixes the dead-end where a failed feature had no path forward |
 | 14 Jun 2026 | `git_ops.open_pr()` made idempotent — retries push to the same existing PR instead of erroring on "already exists" |
-| 14 Jun 2026 | New section: "What's Python, what's AI, what's you" — stage-by-stage breakdown of the pipeline |
+| 14 Jun 2026 | New section: "What's python3, what's AI, what's you" — stage-by-stage breakdown of the pipeline |
 | 14 Jun 2026 | Validator rewritten: generates executable pytest from doc3, runs it against the live app — real exit codes, not LLM opinion |
 | 14 Jun 2026 | Added `app_run_command` / `app_port` to the shared plan — CTO decides how to start the app for testing |
-| 14 Jun 2026 | Global security checks (SEC-GLOBAL-01/02/03) are now deterministic Python, not LLM-judged |
+| 14 Jun 2026 | Global security checks (SEC-GLOBAL-01/02/03) are now deterministic python3, not LLM-judged |
 | 14 Jun 2026 | `docker/runner.py` gains app lifecycle: shared network, `start_app`/`wait_for_app`/`stop_app` |
 | 14 Jun 2026 | `Dockerfile.test` adds `pytest` + `requests` for validator-generated tests |
 | 3 Jun 2026 | Corrected execution order: validator now runs before human gate, not after |
@@ -44,7 +44,7 @@ A pipeline that helps you build software projects. You describe the idea, the sy
 6. [The execution graph](#the-execution-graph)
 7. [The six phases](#the-six-phases)
 8. [Separation of concerns — who does what](#separation-of-concerns--who-does-what)
-9. [What's Python, what's AI, what's you](#whats-python-whats-ai-whats-you)
+9. [What's python3, what's AI, what's you](#whats-python3-whats-ai-whats-you)
 10. [Contract files](#contract-files)
 11. [Human gates — what requires your input](#human-gates)
 12. [Retrying a failed feature](#retrying-a-failed-feature)
@@ -67,7 +67,7 @@ The pipeline has three agent roles and one pipeline role.
 - **Worker agents** — implement one feature each via the Claude API. Tools: `file_read`, `file_write`, `test_runner`. No git access.
 - **Validator agents** — generate executable tests from the doc3 spec (Gemini, never sees source code): `requests`-based HTTP tests for `api` apps, Playwright browser tests for `frontend`/`fullstack` apps. Run them against the live application in Docker, score via real pytest results. Never touch git.
 
-**Pipeline role (Python, no AI):**
+**Pipeline role (python3, no AI):**
 - **git_ops.py** — owns all version control: branch setup, commit, push, PR creation, merge. Called by `git_node` and `merge_node` in the graph. Workers and validators have zero git access.
 
 **Three principles:**
@@ -86,11 +86,11 @@ Everything else is automatic.
 
 ---
 
-## Stage by stage — Python, AI, or human
+## Stage by stage — python3, AI, or human
 
-Every stage of the pipeline does work that falls into one of three categories: deterministic Python (no model call, same input always gives same output), AI (a Claude or Gemini call produces the content), or human (you). Most stages mix more than one.
+Every stage of the pipeline does work that falls into one of three categories: deterministic python3 (no model call, same input always gives same output), AI (a Claude or Gemini call produces the content), or human (you). Most stages mix more than one.
 
-| Stage | Python (deterministic) | AI | Human |
+| Stage | python3 (deterministic) | AI | Human |
 |---|---|---|---|
 | Clarification loop | round counting, doc0 writing, history tracking | the question itself, the "sufficient" decision | answering |
 | Shared plan | writes to doc0, Pydantic validation | summary, decisions, tech stack, `app_run_command`/`app_port` | approve / reject |
@@ -106,9 +106,9 @@ Every stage of the pipeline does work that falls into one of three categories: d
 | merge_node | 100% — `git_ops.merge_pr` | — | — |
 | Memory extraction | 100% — regex parsing of milestone report | — | — |
 
-**The worker is the only stage where AI output is the final, unverified product** — its code is what ships. Every other AI call produces either a draft that Python then verifies (the validator's generated tests are syntax-checked and run for real before they mean anything) or structured content that Python enforces the shape of (CTO outputs via Pydantic, doc2 parsing).
+**The worker is the only stage where AI output is the final, unverified product** — its code is what ships. Every other AI call produces either a draft that python3 then verifies (the validator's generated tests are syntax-checked and run for real before they mean anything) or structured content that python3 enforces the shape of (CTO outputs via Pydantic, doc2 parsing).
 
-The most important property of this design: **AI has zero say in pass/fail**. Validation outcome is 100% Python — real pytest exit codes against a running instance of the application, plus deterministic regex checks on the milestone report. The model's role in validation is translation (spec → test code), not judgment.
+The most important property of this design: **AI has zero say in pass/fail**. Validation outcome is 100% python3 — real pytest exit codes against a running instance of the application, plus deterministic regex checks on the milestone report. The model's role in validation is translation (spec → test code), not judgment.
 
 ---
 
@@ -121,7 +121,7 @@ your-project/
 ├── run.py                     The only command you type
 ├── graph.py                   LangGraph StateGraph (all nodes + edges)
 ├── feature_menu.py            CLI feature selector (called by graph)
-├── git_ops.py                 All git/GitHub operations (no AI, pure Python)
+├── git_ops.py                 All git/GitHub operations (no AI, pure python3)
 │
 │  ── Schemas ────────────────────────────────────────────────────
 ├── schemas/
@@ -172,10 +172,10 @@ your-project/
 │   └── F-01-001_test.py
 │
 │  ── Docker ─────────────────────────────────────────────────────
-├── Dockerfile.test            Test runner image (Node 20 + Python 3 + pytest + requests)
+├── Dockerfile.test            Test runner image (Node 20 + python3 3 + pytest + requests)
 │
 │  ── Config ─────────────────────────────────────────────────────
-├── requirements.txt           Python dependencies
+├── requirements.txt           python3 dependencies
 ├── .env.example               Copy to .env and fill in keys
 └── .gitignore
 ```
@@ -184,10 +184,10 @@ your-project/
 
 ## Setup
 
-**Prerequisites:** Python 3.11+, Docker Desktop (or Docker Engine), `git`, `gh` CLI authenticated to GitHub.
+**Prerequisites:** python3 3.11+, Docker Desktop (or Docker Engine), `git`, `gh` CLI authenticated to GitHub.
 
 ```bash
-# 1. Install Python dependencies
+# 1. Install python3 dependencies
 pip install -r requirements.txt
 
 # 2. Set up environment variables
@@ -198,10 +198,10 @@ cp .env.example .env
 #   GITHUB_TOKEN       — from github.com/settings/tokens (needs repo + workflow scope)
 
 # 3. Build the Docker test image (once per machine)
-python run.py docker-build
+python3 run.py docker-build
 ```
 
-The Docker build takes 2–4 minutes the first time. It installs Node 20, npm, Python 3, pip-audit, and the GitHub CLI. The `GITHUB_TOKEN` is forwarded into the container when the pipeline opens PRs — it is never written to any file.
+The Docker build takes 2–4 minutes the first time. It installs Node 20, npm, python3 3, pip-audit, and the GitHub CLI. The `GITHUB_TOKEN` is forwarded into the container when the pipeline opens PRs — it is never written to any file.
 
 ---
 
@@ -222,7 +222,7 @@ Do not touch `Clarification log` or `Shared plan` — the CTO manages those.
 ### Step 2 — start the pipeline
 
 ```bash
-python run.py start
+python3 run.py start
 ```
 
 The CTO reads your brief and asks clarifying questions one at a time. Answer in the terminal.
@@ -250,7 +250,7 @@ Summary: A REST API for task management using Node/Express with JWT auth ...
 First milestone: users can register, log in, and create tasks.
 
 Review doc0_project_brief.md then run:
-  python run.py resume --decision approve
+  python3 run.py resume --decision approve
 ```
 
 The shared plan now also includes `app_type` (`api`, `frontend`, or `fullstack`), `app_run_command`, and `app_port` — the exact
@@ -268,13 +268,13 @@ other thing worth a careful read before approving — get it wrong here and
 every feature's validation fails for the same reason.
 
 ```bash
-python run.py resume --decision approve
+python3 run.py resume --decision approve
 # or
-python run.py resume --decision reject --note "auth should use sessions not JWT"
+python3 run.py resume --decision reject --note "auth should use sessions not JWT"
 # or
-python run.py resume --decision reject --note "app_run_command should be 'python manage.py runserver 0.0.0.0:8000'"
+python3 run.py resume --decision reject --note "app_run_command should be 'python3 manage.py runserver 0.0.0.0:8000'"
 # or
-python run.py resume --decision reject --note "app_env should use DATABASE_URL not DB_CONNECTION_STRING for Prisma"
+python3 run.py resume --decision reject --note "app_env should use DATABASE_URL not DB_CONNECTION_STRING for Prisma"
 ```
 
 ### Step 4 — approve the contracts
@@ -286,13 +286,13 @@ After plan approval the CTO generates doc1, doc2, doc3 automatically and pauses 
 
 8 features across 2 milestones.
 Review doc1, doc2, doc3 then:
-  python run.py resume --decision approve
+  python3 run.py resume --decision approve
 ```
 
 Read all three files carefully. This is the most important gate — everything downstream depends on contract quality.
 
 ```bash
-python run.py resume --decision approve
+python3 run.py resume --decision approve
 ```
 
 ### Step 5 — select features
@@ -342,15 +342,15 @@ PR: https://github.com/you/repo/pull/12
 
 The code passed all spec tests. Now review the diff on GitHub.
 Approve the PR there, then run:
-  python run.py gh-check F-01-001
-  python run.py resume --decision approve
+  python3 run.py gh-check F-01-001
+  python3 run.py resume --decision approve
 ```
 
 Go to GitHub. Review the diff. If it looks good, approve the PR there, then run:
 
 ```bash
-python run.py gh-check F-01-001   # detects your GitHub approval
-python run.py resume --decision approve
+python3 run.py gh-check F-01-001   # detects your GitHub approval
+python3 run.py resume --decision approve
 ```
 
 ### Step 7 — validator runs, PR merges
@@ -359,7 +359,7 @@ The validator already ran before this gate (Step 6.5). To recap what happened:
 
 1. **Validator** read only the doc3 test suite, generated a pytest file from it (Gemini — never sees source code), started any required services (database, cache) plus the app in Docker with `app_run_command`/`app_env`, and ran the generated tests against it for real
 2. Each doc3 `test_id` got a real PASSED/FAILED/ERROR/SKIPPED result from pytest — not an LLM opinion
-3. The three global security checks ran as pure Python against the milestone report
+3. The three global security checks ran as pure python3 against the milestone report
 4. `overall: pass` only because every blocking test_id actually passed and the security checks were clean
 
 After your PR approval:
@@ -378,29 +378,29 @@ The pipeline loops back to the feature selection phase. Select the next batch or
 
 ```bash
 # One-time setup
-python run.py docker-build
+python3 run.py docker-build
 
 # Begin a new project
-python run.py start
+python3 run.py start
 
 # Continue after any gate or interruption
-python run.py resume
-python run.py resume --decision approve
-python run.py resume --decision reject --note "your note here"
+python3 run.py resume
+python3 run.py resume --decision approve
+python3 run.py resume --decision reject --note "your note here"
 
 # Detect GitHub PR approval and update pipeline state
-python run.py gh-check F-01-001
+python3 run.py gh-check F-01-001
 
 # Requeue a feature that failed validation
-python run.py retry F-01-001
-python run.py retry F-01-001 --force   # bypass the retry cap
+python3 run.py retry F-01-001
+python3 run.py retry F-01-001 --force   # bypass the retry cap
 
 # Check project state at any time
-python run.py status
+python3 run.py status
 
 # Inspect project memory
-python run.py memory
-python run.py memory F-01-002
+python3 run.py memory
+python3 run.py memory F-01-002
 ```
 
 `gh-check` polls GitHub for the PR associated with a feature ID. If the PR is approved or merged, it writes `human_gate: approved` into the milestone report and marks the feature ready for validation. Run it after you approve the PR on GitHub, then run `resume`.
@@ -418,24 +418,24 @@ cto_orchestrator
       │
       ├── worker_node        (Claude API: file_read / file_write / test_runner)
       │        │
-      │   git_node           (Python: commit, push, gh pr create)
+      │   git_node           (python3: commit, push, gh pr create)
       │        │
       │   validator_node     (Gemini: generates pytest from doc3, runs it
       │        │               against the live app in Docker — real results)
       │        │
       │   human_gate         (PAUSE — you review code that already passed spec)
       │        │
-      │   merge_node         (Python: gh pr merge into develop)
+      │   merge_node         (python3: gh pr merge into develop)
       │        │
       └── cto_orchestrator   (loop: unlock next features, or complete)
 ```
 
 Validator runs before human review by design — you only spend time reviewing code that already passed real, executed tests. If validation fails, the pipeline routes back to the worker without ever showing you the PR.
 
-Nodes that run AI: `cto_orchestrator`, `worker_node`, `validator_node` (code generation only — the test execution itself is Python + Docker, not AI).
-Nodes that run Python only: `git_node`, `merge_node`, `human_gate`.
+Nodes that run AI: `cto_orchestrator`, `worker_node`, `validator_node` (code generation only — the test execution itself is python3 + Docker, not AI).
+Nodes that run python3 only: `git_node`, `merge_node`, `human_gate`.
 
-The graph is checkpointed to `checkpoints.db` after every node. A crash or `Ctrl+C` at any point is safe — `python run.py resume` continues from the last completed node.
+The graph is checkpointed to `checkpoints.db` after every node. A crash or `Ctrl+C` at any point is safe — `python3 run.py resume` continues from the last completed node.
 
 ---
 
@@ -463,9 +463,9 @@ This is the most important design principle. Every role has strict boundaries.
 |---|---|---|---|
 | **CTO** (Claude/Gemini) | doc0, doc1–3 templates, memory.json | doc0 clarification log + shared plan (incl. `app_run_command`/`app_port`/`app_env`/`services`), doc1, doc2, doc3 | None |
 | **Worker** (Claude API) | doc1, doc2 feature block, doc4 template, memory | Source files, `reports/{fid}_milestone.md` | **None** |
-| **Validator** (Gemini + Python) | doc3 test suite **only** (never source code) | `validation/{fid}_test.py`, validator_result in milestone report | **None** |
-| **git_node** (Python) | Source files on disk | git history, GitHub PR | **Full** |
-| **merge_node** (Python) | validator_result from milestone report | git history (merge) | **Full** |
+| **Validator** (Gemini + python3) | doc3 test suite **only** (never source code) | `validation/{fid}_test.py`, validator_result in milestone report | **None** |
+| **git_node** (python3) | Source files on disk | git history, GitHub PR | **Full** |
+| **merge_node** (python3) | validator_result from milestone report | git history (merge) | **Full** |
 | **You** | Everything | doc0, .env, CLAUDE.md, rules | Full |
 
 Workers cannot lie about opening a PR — the PR is opened by `git_node` reading the actual files on disk. The validator cannot be influenced by the implementation — Gemini only ever sees the doc3 spec, and the pass/fail comes from a real pytest exit code against the running app, not from reading the worker's claims. These are structural guarantees, not prompt-level instructions.
@@ -474,11 +474,11 @@ The validator does briefly run Docker containers — the application under test,
 
 ---
 
-## What's Python, what's AI, what's you
+## What's python3, what's AI, what's you
 
-The table above shows boundaries by role. This table shows the same pipeline from a different angle — for each stage, what fraction is deterministic Python versus a model call versus a human decision.
+The table above shows boundaries by role. This table shows the same pipeline from a different angle — for each stage, what fraction is deterministic python3 versus a model call versus a human decision.
 
-| Stage | Python (deterministic) | AI | Human |
+| Stage | python3 (deterministic) | AI | Human |
 |---|---|---|---|
 | Clarification loop | round counting, doc0 writing, history tracking | the question itself, "sufficient" decision | answering |
 | Shared plan | writes to doc0, Pydantic validation | summary, decisions, tech stack, `app_run_command`/`app_port`/`app_env`/`services` | approve/reject |
@@ -496,9 +496,9 @@ The table above shows boundaries by role. This table shows the same pipeline fro
 | merge_node | 100% (`git_ops.merge_pr`) | — | — |
 | Memory extraction | 100% (regex parsing of milestone report) | — | — |
 
-**The worker is the only stage where AI output is the final, unverified product** — its code is what ships. Every other AI call produces either a draft that Python then verifies (the validator's generated tests get syntax-checked and run for real before they count) or structured content whose shape Python enforces via Pydantic (CTO outputs).
+**The worker is the only stage where AI output is the final, unverified product** — its code is what ships. Every other AI call produces either a draft that python3 then verifies (the validator's generated tests get syntax-checked and run for real before they count) or structured content whose shape python3 enforces via Pydantic (CTO outputs).
 
-The key structural property: **AI has zero say in pass/fail.** Validation result is 100% Python — real pytest exit codes against the running app, plus regex checks on the milestone report. The model's role in validation is translation (spec → test code), never judgment.
+The key structural property: **AI has zero say in pass/fail.** Validation result is 100% python3 — real pytest exit codes against the running app, plus regex checks on the milestone report. The model's role in validation is translation (spec → test code), never judgment.
 
 ---
 
@@ -510,7 +510,7 @@ The three contracts start as templates in the repo. The CTO fills them in at run
 
 **doc2 — features contract.** One block per feature with: ID (F-MM-NNN), title, milestone, priority, complexity, `depends_on` list, acceptance criteria (Given/When/Then), security constraint references into doc1, branch name. The CTO uses this to build worker contexts, the feature menu, and the DAG execution plan.
 
-**doc3 — validation contract.** One test suite per feature. Each test case has: ID, type (`unit`/`integration`/`security`/`regression`), `blocking` flag, plain-language description, and **interface-level** given/when/expected — concrete HTTP method, path, request body, expected status and response shape. Specific enough that someone who has never seen the implementation can write a test from it. `verified_via: executable_test` for feature-specific cases — the validator compiles these into a real pytest file and runs it against the live application. The three global security tests (SEC-GLOBAL-01/02/03) keep `verified_via: milestone_report.*` and are checked by deterministic Python, not compiled into tests.
+**doc3 — validation contract.** One test suite per feature. Each test case has: ID, type (`unit`/`integration`/`security`/`regression`), `blocking` flag, plain-language description, and **interface-level** given/when/expected — concrete HTTP method, path, request body, expected status and response shape. Specific enough that someone who has never seen the implementation can write a test from it. `verified_via: executable_test` for feature-specific cases — the validator compiles these into a real pytest file and runs it against the live application. The three global security tests (SEC-GLOBAL-01/02/03) keep `verified_via: milestone_report.*` and are checked by deterministic python3, not compiled into tests.
 
 **doc4 — milestone report template.** The worker copies this to `reports/{feature_id}_milestone.md` and fills every field: what was implemented, what was left undone, every test phase run with exit code, issues discovered, security checklist status. The validator's deterministic security checks (SEC-GLOBAL-01/02/03) read this report; the feature-specific tests run against the live application instead.
 
@@ -518,7 +518,7 @@ The three contracts start as templates in the repo. The CTO fills them in at run
 
 ## Human gates
 
-Gates are deliberate pauses. The graph writes to `project_state.json` and stops. You resume with `python run.py resume`.
+Gates are deliberate pauses. The graph writes to `project_state.json` and stops. You resume with `python3 run.py resume`.
 
 **Plan approval.** CTO has finished clarifying and written the shared plan into doc0. You read it and approve or reject with a note. Rejection triggers a revision.
 
@@ -539,7 +539,7 @@ The graph is resumable indefinitely. You can stop and come back days later — `
 When a feature fails validation, it has **no automatic path forward**. The graph marks it `FAILED` and every routing check in `_route_impl` finds nothing left to do for it — without `retry`, this is a dead end that would eventually hit LangGraph's recursion limit if you just kept calling `resume`.
 
 ```bash
-python run.py retry F-01-001
+python3 run.py retry F-01-001
 ```
 
 What `retry` does, in order:
@@ -557,7 +557,7 @@ Because the branch and PR already exist, `git_node`'s next commit just pushes mo
 **Retry cap.** After `MAX_FEATURE_RETRIES` (3) failed attempts, `retry` refuses and points you at `validation/{feature_id}_test.py` and the milestone report — at that point the issue is usually that doc3's spec or doc2's acceptance criteria need a human look, not another worker attempt. Override with `--force`:
 
 ```bash
-python run.py retry F-01-001 --force
+python3 run.py retry F-01-001 --force
 ```
 
 ---
@@ -575,8 +575,8 @@ python run.py retry F-01-001 --force
 **open_risks** — unresolved high/critical issues. Always injected into every worker context.
 
 ```bash
-python run.py memory              # full memory
-python run.py memory F-01-002    # filtered for this feature
+python3 run.py memory              # full memory
+python3 run.py memory F-01-002    # filtered for this feature
 ```
 
 ---
@@ -585,7 +585,7 @@ python run.py memory F-01-002    # filtered for this feature
 
 The test image (`dev-assistant-test`) serves three purposes: the worker's `test_runner` tool (install/lint/test/audit), running the application under test, and running the validator's generated pytest files. The project directory is mounted at `/project` in every container.
 
-The image includes: Node 20, npm, Python 3, `pip-audit`, `pytest`, `requests`, `playwright` (+ Chromium binary), GitHub CLI.
+The image includes: Node 20, npm, python3 3, `pip-audit`, `pytest`, `requests`, `playwright` (+ Chromium binary), GitHub CLI.
 
 Git commands (branch, commit, push) run on the **host machine** via `git_ops.py` — they never go through Docker.
 
@@ -601,7 +601,7 @@ Git commands (branch, commit, push) run on the **host machine** via `git_ops.py`
 
 **Rebuild the image** if you update `Dockerfile.test`:
 ```bash
-python run.py docker-build
+python3 run.py docker-build
 ```
 
 **Use a custom image name:**
@@ -634,7 +634,7 @@ docker run -d --name app-debug --network dev-assistant-net \
 # Run the generated test against it
 docker run --rm --network dev-assistant-net \
   -v $(pwd):/project -w /project dev-assistant-test \
-  python3 -m pytest validation/F-01-001_test.py -v
+  python33 -m pytest validation/F-01-001_test.py -v
 
 # Clean up
 docker rm -f app-debug db
@@ -698,7 +698,7 @@ The `develop` → `main` merge is always a human decision made after a full mile
 
 **Gemini 2.5 Flash specifics.** The router always passes `thinkingBudget: 0` to disable extended thinking for structured outputs, sets `maxOutputTokens: 8192` minimum, retries on 429/503 with 15s × attempt backoff (5 attempts), and guards against truncated responses. These are not optional — Gemini 2.5 Flash silently consumes its token budget on internal reasoning before writing the response, which causes truncation without these mitigations. The same settings apply to the validator's test-code generation calls.
 
-The validator uses a different provider than the worker for code generation. But the actual pass/fail no longer depends on either model's judgment — it comes from a real pytest exit code against a running instance of the application, plus deterministic Python checks on the milestone report. The model's only job is translating a spec into test code.
+The validator uses a different provider than the worker for code generation. But the actual pass/fail no longer depends on either model's judgment — it comes from a real pytest exit code against a running instance of the application, plus deterministic python3 checks on the milestone report. The model's only job is translating a spec into test code.
 
 ---
 
@@ -708,10 +708,10 @@ The validator uses a different provider than the worker for code generation. But
 Start Docker Desktop (Mac/Windows) or `sudo systemctl start docker` (Linux).
 
 **"Test image not found"**
-Run `python run.py docker-build` first.
+Run `python3 run.py docker-build` first.
 
 **"No checkpoint found. Run start first."**
-`checkpoints.db` is missing or corrupt. Run `python run.py start`.
+`checkpoints.db` is missing or corrupt. Run `python3 run.py start`.
 
 **Worker exceeded 40 turns**
 The feature was too complex for one session. Read `reports/{feature_id}_milestone.md` to see what was partially done. Split the feature in doc2 into smaller pieces, then requeue.
@@ -726,7 +726,7 @@ The `git_node` couldn't push. Most common cause: the remote branch already exist
 The worker may not have filed the milestone report correctly, so `git_node` may not have opened the PR. Check `reports/` for the milestone file and check GitHub for a PR with the feature ID in the title. If missing, the feature can be requeued.
 
 **"Playwright tests fail with 'browser was not found'"**
-The Chromium binary is not installed in the test image. Rebuild with `python run.py docker-build` — the current `Dockerfile.test` runs `playwright install chromium --with-deps` during the build, so this only happens if you're using an old image. After rebuilding, the binary is baked into the layer and no download happens at test time.
+The Chromium binary is not installed in the test image. Rebuild with `python3 run.py docker-build` — the current `Dockerfile.test` runs `playwright install chromium --with-deps` during the build, so this only happens if you're using an old image. After rebuilding, the binary is baked into the layer and no download happens at test time.
 
 **"Playwright test fails with 'TimeoutError: waiting for locator'"**
 The element the test is looking for didn't appear within Playwright's default timeout. This usually means either the navigation or action in the previous step failed silently. Open `validation/{feature_id}_test.py` — the generated test should have intermediate assertions. If the spec's `expected` was vague (e.g. "page shows success"), the generated locator may be wrong. Tighten the `expected` wording in doc3 (e.g. "heading 'Welcome' with text 'Registration complete' is visible") and retry.
@@ -735,7 +735,7 @@ The element the test is looking for didn't appear within Playwright's default ti
 The validator started the app with `app_run_command` but it never responded within 60 seconds. The milestone report's `validator_result.note` includes the container's last logs. Common causes: `app_run_command` is wrong for this stack (fix via plan rejection before contracts are generated, or manually correct `app_run_command`/`app_port` in doc0 and requeue), `app_env` doesn't match the variable name your framework expects (e.g. you need `DATABASE_URL` but the app reads `DB_URL`), the app needs an env var beyond `app_env` that isn't set (add it to `.env` and to the `APP_`/`PORT`-prefixed allowlist in `docker/runner.py._safe_env` if needed), or the app takes longer than 60s to start (increase `APP_READY_TIMEOUT` in `docker/runner.py`).
 
 **"Service 'db' did not become reachable" (or similar)**
-A `services` entry from doc0 — a database, cache, etc. — started but never accepted TCP connections within 30 seconds. The note includes that container's logs. Common causes: the image tag doesn't exist (typo in `services[].image`), the service's own `env` is missing something it requires to start (e.g. Postgres refuses to start without `POSTGRES_PASSWORD`), or `services[].port` doesn't match the port the image actually listens on by default. Fix in doc0's `app_env`/`services` block directly (no need to reject the whole plan for a typo), then `python run.py retry {feature_id}`. When this fails, the app is never started — only the service is implicated.
+A `services` entry from doc0 — a database, cache, etc. — started but never accepted TCP connections within 30 seconds. The note includes that container's logs. Common causes: the image tag doesn't exist (typo in `services[].image`), the service's own `env` is missing something it requires to start (e.g. Postgres refuses to start without `POSTGRES_PASSWORD`), or `services[].port` doesn't match the port the image actually listens on by default. Fix in doc0's `app_env`/`services` block directly (no need to reject the whole plan for a typo), then `python3 run.py retry {feature_id}`. When this fails, the app is never started — only the service is implicated.
 
 **"App did not become ready" but services started fine**
 If `services` started and became reachable but the app still doesn't come up, the app likely can't connect to the service with the given `app_env` — check the app container's logs in `validator_result.note` for connection errors (wrong hostname, wrong credentials, wrong database name). Remember: the hostname in `app_env`'s connection string must exactly match the corresponding `services[].name`.
@@ -747,16 +747,16 @@ Gemini's generated `validation/{feature_id}_test.py` doesn't define a function n
 Two possible causes. (1) The generated tests are failing for real — open `validation/{feature_id}_test.py` and the milestone report's `validator_result.note` to see which `test_id`s failed and why; this usually means the implementation doesn't match the doc3 spec, or the spec itself was ambiguous. (2) `app_run_command` doesn't actually start the app — see "App did not become ready" above. Either way, the failure reasons in `validator_result.failures` and `.results` point at specific `test_id`s, not a vague "fail".
 
 **CTO contracts are missing a feature**
-Run `python run.py resume --decision reject --note "F-01-003 missing from doc2"`. The CTO regenerates all three contracts.
+Run `python3 run.py resume --decision reject --note "F-01-003 missing from doc2"`. The CTO regenerates all three contracts.
 
 **Pipeline crashed mid-feature**
-Run `python run.py resume`. LangGraph resumes from the last completed node. If it crashed during `git_node`, the branch may be in a partial state — check `git status` and clean up if needed before resuming.
+Run `python3 run.py resume`. LangGraph resumes from the last completed node. If it crashed during `git_node`, the branch may be in a partial state — check `git status` and clean up if needed before resuming.
 
 **Want to restart from scratch**
 ```bash
 rm -rf project_state.json checkpoints.db memory.json validation/
 git checkout doc1_security_contract.md doc2_features_contract.md doc3_validation_contract.md
-python run.py start
+python3 run.py start
 ```
 
 ---
@@ -779,6 +779,6 @@ python run.py start
 | `.claude/rules/*.md` | You | Adjust implementation rules. Loaded by both Claude Code (automatic) and the API worker (injected). |
 | `git_ops.py` | Pipeline | Do not edit unless you understand the execution graph. |
 | `graph.py` | Pipeline | Do not edit unless you understand LangGraph. |
-| `Dockerfile.test` | You | Add tools your project needs. Rebuild with `python run.py docker-build`. |
+| `Dockerfile.test` | You | Add tools your project needs. Rebuild with `python3 run.py docker-build`. |
 | `.env` | You | Never commit. Add to `.gitignore` if not already there. |
 | `run.py` | Pipeline | Entry point. Edit only if adding new top-level commands. |

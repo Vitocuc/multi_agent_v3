@@ -84,7 +84,7 @@ _CONSISTENCY_SYS = _BASE + (
 # ---------------------------------------------------------------------------
 
 def get_next_question(history: List[Dict], provider: str, root: Path = ROOT) -> ClarificationQuestion:
-    doc0 = (root / "doc0_project_brief.md").read_text()
+    doc0 = (root /  "contracts" / "doc0_project_brief.md").read_text()
     msgs = [user_msg(
         f"Project brief:\n\n{doc0}\n\n"
         "Return a ClarificationQuestion JSON: "
@@ -96,7 +96,7 @@ def get_next_question(history: List[Dict], provider: str, root: Path = ROOT) -> 
 
 
 def write_plan(history: List[Dict], provider: str, root: Path = ROOT) -> SharedPlan:
-    doc0 = (root / "doc0_project_brief.md").read_text()
+    doc0 = (root / "contracts" / "doc0_project_brief.md").read_text()
     msgs = [user_msg(
         f"Project brief + clarification log:\n\n{doc0}\n\n"
         "Return a SharedPlan JSON with ALL fields: "
@@ -117,7 +117,7 @@ def write_plan(history: List[Dict], provider: str, root: Path = ROOT) -> SharedP
 
 def revise_plan(history: List[Dict], rejection_note: str,
                 provider: str, root: Path = ROOT) -> SharedPlan:
-    doc0 = (root / "doc0_project_brief.md").read_text()
+    doc0 = (root / "contracts" / "doc0_project_brief.md").read_text()
     msgs = [user_msg(
         f"Brief:\n\n{doc0}\n\nRejection note: {rejection_note}\n\n"
         "Revise the SharedPlan to address the feedback. Return SharedPlan JSON "
@@ -134,61 +134,88 @@ def revise_plan(history: List[Dict], rejection_note: str,
 # Phase 2 — Contract generation
 # ---------------------------------------------------------------------------
 
+def _load_contract_if_valid(root: Path, filename: str) -> str | None:
+    """Return file content if it exists and looks like valid markdown (not JSON-wrapped/truncated)."""
+    p = root / "contracts" / filename
+    if not p.exists():
+        return None
+    raw = p.read_text()
+    if not raw or len(raw) < 200:
+        return None
+    # Reject if JSON-wrapped (starts with {)
+    if raw.strip().startswith("{"):
+        return None
+    return raw
+
+
 def generate_contracts(provider: str, root: Path = ROOT) -> Dict:
     """
-    Generate all three contracts using the template files as format references.
-    Templates (doc1/doc2/doc3) must exist in the repo root — they define the
-    exact structure the CTO must produce. The generated files overwrite the templates.
+    Generate all three contracts. If doc1/doc2 already exist as valid markdown,
+    skip regeneration and load them instead. Always regenerates doc3 so it
+    matches the features parsed from doc2.
     """
-    doc0 = (root / "doc0_project_brief.md").read_text()
-    tpl1 = _load_template(root, "doc1_security_contract.md")
-    tpl2 = _load_template(root, "doc2_features_contract.md")
-    tpl3 = _load_template(root, "doc3_validation_contract.md")
+    doc0 = (root / "contracts" / "doc0_project_brief.md").read_text()
 
-    # ── Security contract ────────────────────────────────────────────────────
-    sec_raw = call(provider, [user_msg(
-        f"Approved project plan:\n\n{doc0}\n\n"
-        "Generate a complete, filled doc1_security_contract.md.\n\n"
-        "Rules:\n"
-        "- Fill every YAML field — no placeholders, no TBD\n"
-        "- threat_model: name specific actors and their attack vectors\n"
-        "- auth.mechanism: concrete choice (JWT, session, OAuth2, API key)\n"
-        "- data.pii_fields: list actual field names from this domain\n"
-        "- Security checklist: 8+ items, each actionable\n"
-        "- Reproduce the exact template structure below, filled for this project\n\n"
-        f"TEMPLATE:\n\n{tpl1}\n\n"
-        "Return the complete filled markdown. No placeholders. No comments."
-    )], _CONTRACT_SYS, temperature=0.2, max_tokens=8192)
-    _save(root, "doc1_security_contract.md", sec_raw)
+    # ── Security contract (skip if already valid) ────────────────────────────
+    existing_sec = _load_contract_if_valid(root, "doc1_security_contract.md")
+    if existing_sec:
+        print("  [cto] doc1 already valid — skipping")
+        sec_raw = existing_sec
+    else:
+        tpl1 = _load_template(root, "doc1_security_contract.md")
+        sec_raw = call(provider, [user_msg(
+            f"Approved project plan:\n\n{doc0}\n\n"
+            "Generate a complete, filled doc1_security_contract.md.\n\n"
+            "Rules:\n"
+            "- Fill every YAML field — no placeholders, no TBD\n"
+            "- threat_model: name specific actors and their attack vectors\n"
+            "- auth.mechanism: concrete choice (JWT, session, OAuth2, API key)\n"
+            "- data.pii_fields: list actual field names from this domain\n"
+            "- Security checklist: 8+ items, each actionable\n"
+            "- Reproduce the exact template structure below, filled for this project\n\n"
+            f"TEMPLATE:\n\n{tpl1}\n\n"
+            "Return the complete filled markdown. No placeholders. No comments. "
+            "Do NOT wrap in JSON — output plain markdown only."
+        )], _CONTRACT_SYS, temperature=0.2, max_tokens=32768)
+        _save(root, "doc1_security_contract.md", _unwrap_llm_output(sec_raw))
 
-    # ── Features contract ────────────────────────────────────────────────────
-    feat_raw = call(provider, [user_msg(
-        f"Approved plan:\n\n{doc0}\n\n"
-        f"Security contract (doc1, already written):\n{sec_raw[:2000]}\n\n"
-        "Generate a complete, filled doc2_features_contract.md.\n\n"
-        "Rules:\n"
-        "- feature_id format: F-MM-NNN (M = milestone number, N = sequence)\n"
-        "- acceptance_criteria: Given/When/Then format — every criterion testable\n"
-        "- security_constraints: ref doc1 by exact section heading\n"
-        "- depends_on: explicit feature_id list (empty [] only if truly independent)\n"
-        "- branch_name: kebab-case, e.g. feature/F-01-001-user-login\n"
-        "- Fill the milestone map and the feature status tracker table\n"
-        "- Reproduce the exact template structure below, filled for this project\n\n"
-        f"TEMPLATE:\n\n{tpl2}\n\n"
-        "Return the complete filled markdown. No placeholders."
-    )], _CONTRACT_SYS, temperature=0.2, max_tokens=8192)
-    _save(root, "doc2_features_contract.md", feat_raw)
+    # ── Features contract (skip if already valid) ────────────────────────────
+    existing_feat = _load_contract_if_valid(root, "doc2_features_contract.md")
+    if existing_feat:
+        print("  [cto] doc2 already valid — skipping")
+        feat_unwrapped = existing_feat
+        feat_raw = existing_feat
+    else:
+        tpl2 = _load_template(root, "doc2_features_contract.md")
+        feat_raw = call(provider, [user_msg(
+            f"Approved plan:\n\n{doc0}\n\n"
+            f"Security contract (doc1, already written):\n{sec_raw[:2000]}\n\n"
+            "Generate a complete, filled doc2_features_contract.md.\n\n"
+            "Rules:\n"
+            "- feature_id format: F-MM-NNN (M = milestone number, N = sequence)\n"
+            "- acceptance_criteria: Given/When/Then format — every criterion testable\n"
+            "- security_constraints: ref doc1 by exact section heading\n"
+            "- depends_on: explicit feature_id list (empty [] only if truly independent)\n"
+            "- branch_name: kebab-case, e.g. feature/F-01-001-user-login\n"
+            "- Fill the milestone map and the feature status tracker table\n"
+            "- Reproduce the exact template structure below, filled for this project\n\n"
+            f"TEMPLATE:\n\n{tpl2}\n\n"
+            "Return the complete filled markdown. No placeholders. "
+            "Do NOT wrap in JSON — output plain markdown only."
+        )], _CONTRACT_SYS, temperature=0.2, max_tokens=32768)
+        feat_unwrapped = _unwrap_llm_output(feat_raw)
+        _save(root, "doc2_features_contract.md", feat_unwrapped)
 
-    # Parse feature blocks for state population and doc3 generation
-    features = _parse_feature_blocks(feat_raw)
+    # Parse feature blocks from doc2
+    features = _parse_feature_blocks(feat_unwrapped)
+    if not features:
+        raise RuntimeError("No features parsed from doc2 — cannot generate validation contract.")
     criteria_summary = json.dumps([
         {"id": f["feature_id"], "criteria": f.get("acceptance_criteria", [])}
         for f in features
     ], indent=2)
 
-    # ── Validation contract ──────────────────────────────────────────────────
-    # Determine test format based on app_type so doc3 cases are the right shape
-    # for the validator's code-gen prompt.
+    # ── Validation contract (always regenerate to match doc2 features) ───────
     app_type = "api"
     app_type_m = re.search(r'app_type:\s*"?([\w]+)"?', doc0)
     if app_type_m:
@@ -221,6 +248,12 @@ def generate_contracts(provider: str, root: Path = ROOT) -> Dict:
             "with verified_via: executable_test_api so the generator uses requests for them."
         )
 
+    # Delete existing doc3 so template fallback is used (not a stale version)
+    doc3_path = root / "contracts" / "doc3_validation_contract.md"
+    if doc3_path.exists():
+        doc3_path.unlink()
+    tpl3 = _load_template(root, "doc3_validation_contract.md")
+
     val_raw = call(provider, [user_msg(
         f"Feature acceptance criteria from doc2:\n{criteria_summary}\n\n"
         f"app_type: {app_type}\n\n"
@@ -241,9 +274,10 @@ def generate_contracts(provider: str, root: Path = ROOT) -> Dict:
         "- human_gate_required: true for auth, PII, payment features\n"
         "- Reproduce the exact template structure below, filled for this project\n\n"
         f"TEMPLATE:\n\n{tpl3}\n\n"
-        "Return the complete filled markdown. No placeholders."
-    )], _CONTRACT_SYS, temperature=0.2, max_tokens=8192)
-    _save(root, "doc3_validation_contract.md", val_raw)
+        "Return the complete filled markdown. No placeholders. "
+        "Do NOT wrap in JSON — output plain markdown only."
+    )], _CONTRACT_SYS, temperature=0.2, max_tokens=32768)
+    _save(root, "doc3_validation_contract.md", _unwrap_llm_output(val_raw))
 
     # Self-consistency check
     _consistency_check(features, val_raw, provider)
@@ -332,12 +366,12 @@ def _load_template(root: Path, filename: str) -> str:
     These live in the repo root and define the exact structure the CTO must produce.
     If the template does not exist, return a minimal fallback hint.
     """
-    p = root / filename
+    p = root / "contracts" / filename
     return p.read_text() if p.exists() else f"(template {filename} not found — produce standard structure)"
 
 
 def append_clarification_round(root: Path, n: int, question: str, answer: str) -> None:
-    doc0 = root / "doc0_project_brief.md"
+    doc0 = root / "contracts" / "doc0_project_brief.md"
     text = doc0.read_text()
     entry = f'\n---\nround: {n}\nquestion: "{question}"\nanswer: "{answer}"\nresolved: true\n---'
     text = text.replace("## Shared plan", entry + "\n\n## Shared plan") \
@@ -346,7 +380,7 @@ def append_clarification_round(root: Path, n: int, question: str, answer: str) -
 
 
 def _write_plan_to_doc0(root: Path, plan: SharedPlan) -> None:
-    doc0 = root / "doc0_project_brief.md"
+    doc0 = root / "contracts" / "doc0_project_brief.md"
     text = doc0.read_text()
     block = (
         f"shared_plan_approved: false\n\n"
@@ -394,7 +428,7 @@ def get_app_config(root: Path = ROOT) -> Dict[str, object]:
         "services":    [],
     }
 
-    doc0 = root / "doc0_project_brief.md"
+    doc0 = root / "contracts" / "doc0_project_brief.md"
     if not doc0.exists():
         return default
     text = doc0.read_text()
@@ -419,8 +453,30 @@ def get_app_config(root: Path = ROOT) -> Dict[str, object]:
     return default
 
 
+def _unwrap_llm_output(text: str) -> str:
+    """Strip JSON/markdown code block wrappers that LLMs sometimes add."""
+    s = text.strip()
+    # Remove ```json ... ``` wrapper (handle trailing newline before closing ```)
+    if s.startswith("```"):
+        _, _, rest = s.partition("\n")
+        s = rest.strip()
+        if s.endswith("```"):
+            s = s[:-3].strip()
+    # If it's a JSON object with a single key holding the markdown as a string, extract it
+    if s.startswith("{"):
+        try:
+            obj = json.loads(s)
+            if isinstance(obj, dict) and len(obj) == 1:
+                val = list(obj.values())[0]
+                if isinstance(val, str) and len(val) > 200:
+                    return val.strip()
+        except json.JSONDecodeError:
+            pass
+    return s
+
+
 def _save(root: Path, filename: str, content: str) -> None:
-    (root / filename).write_text(content.strip() + "\n")
+    (root / "contracts" / filename).write_text(_unwrap_llm_output(content) + "\n")
 
 
 def _parse_feature_blocks(feat_raw: str) -> List[Dict]:

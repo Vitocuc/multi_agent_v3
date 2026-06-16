@@ -79,7 +79,7 @@ THREAD_ID = "main"
 # ---------------------------------------------------------------------------
 
 def cmd_start():
-    doc0 = ROOT / "doc0_project_brief.md"
+    doc0 = ROOT / "contracts" / "doc0_project_brief.md"
     if not doc0.exists():
         print(c(RED, "\n✗ doc0_project_brief.md not found."))
         print(c(DIM, "  Fill it in first, then run: python run.py start\n"))
@@ -180,7 +180,7 @@ def cmd_resume(decision: str = "", note: str = ""):
 
     if gate == "plan_approval":
         if approved:
-            doc0 = ROOT / "doc0_project_brief.md"
+            doc0 = ROOT / "contracts" / "doc0_project_brief.md"
             text = doc0.read_text()
             doc0.write_text(text.replace("shared_plan_approved: false", "shared_plan_approved: true"))
             ps.plan_approved = True

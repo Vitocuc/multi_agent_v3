@@ -158,7 +158,7 @@ def run(context: FeatureContext, root: Path = ROOT) -> WorkerResult:
         return WorkerResult(feature_id=fid, success=False, milestone_report="",
                             error="ANTHROPIC_API_KEY not set in .env")
 
-    model   = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-20250514")
+    model   = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
     mem_str = json.dumps(context["memory"], indent=2)
 
     # Build initial prompt
@@ -217,12 +217,34 @@ def run(context: FeatureContext, root: Path = ROOT) -> WorkerResult:
             method="POST",
         )
 
-        try:
-            with urllib.request.urlopen(req, timeout=300) as r:
-                resp = json.loads(r.read().decode())
-        except Exception as e:
+        last_err = ""
+        for attempt in range(1, 4):
+            try:
+                with urllib.request.urlopen(req, timeout=300) as r:
+                    resp = json.loads(r.read().decode())
+                break
+            except urllib.error.HTTPError as e:
+                body = e.read().decode()[:300]
+                if attempt < 3 and e.code in (500, 502, 503, 529):
+                    wait = 10 * attempt
+                    print(f"  [worker] HTTP {e.code} — retrying in {wait}s (attempt {attempt}/3)")
+                    import time; time.sleep(wait)
+                    last_err = f"HTTP {e.code}: {body}"
+                    continue
+                return WorkerResult(feature_id=fid, success=False,
+                                    milestone_report="", error=f"HTTP {e.code}: {body}")
+            except Exception as e:
+                if attempt < 3:
+                    wait = 10 * attempt
+                    print(f"  [worker] {type(e).__name__} — retrying in {wait}s (attempt {attempt}/3)")
+                    import time; time.sleep(wait)
+                    last_err = str(e)
+                    continue
+                return WorkerResult(feature_id=fid, success=False,
+                                    milestone_report="", error=str(e))
+        else:
             return WorkerResult(feature_id=fid, success=False,
-                                milestone_report="", error=str(e))
+                                milestone_report="", error=last_err)
 
         stop_reason = resp.get("stop_reason")
         content     = resp.get("content", [])

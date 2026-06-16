@@ -41,7 +41,7 @@ def _load_env() -> None:
     _env_loaded = True
 
 
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-20250514")
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 ANTHROPIC_API = "https://api.anthropic.com/v1/messages"
@@ -72,15 +72,28 @@ def _claude(messages: List[Dict], system: str, temperature: float, max_tokens: i
     key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if not key:
         raise LLMError("ANTHROPIC_API_KEY not set in .env")
-    raw = _post(ANTHROPIC_API, {
-        "model": CLAUDE_MODEL, "max_tokens": max_tokens,
-        "temperature": temperature, "system": system, "messages": messages,
-    }, {"Content-Type": "application/json", "x-api-key": key,
-        "anthropic-version": "2023-06-01"})
-    try:
-        return raw["content"][0]["text"]
-    except (KeyError, IndexError) as e:
-        raise LLMError(f"Unexpected Claude response: {e}")
+    last_error: str = ""
+    for attempt in range(1, 4):
+        try:
+            raw = _post(ANTHROPIC_API, {
+                "model": CLAUDE_MODEL, "max_tokens": max_tokens,
+                "temperature": temperature, "system": system, "messages": messages,
+            }, {"Content-Type": "application/json", "x-api-key": key,
+                "anthropic-version": "2023-06-01"}, timeout=600)
+            try:
+                return raw["content"][0]["text"]
+            except (KeyError, IndexError) as e:
+                raise LLMError(f"Unexpected Claude response: {e}")
+        except (LLMError, TimeoutError, OSError) as e:
+            err_str = str(e)
+            if attempt < 3 and any(m in err_str for m in ("503", "502", "529", "timeout", "reset")):
+                wait = 15 * attempt
+                print(f"  [claude] {err_str} — retrying in {wait}s (attempt {attempt}/3)")
+                time.sleep(wait)
+                last_error = err_str
+                continue
+            raise
+    raise LLMError(f"Claude failed after 3 attempts. Last error: {last_error}")
 
 
 def _gemini(messages: List[Dict], system: str, temperature: float, max_tokens: int) -> str:

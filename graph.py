@@ -33,8 +33,11 @@ from agents  import validator as validator_agent
 from feature_menu import present_and_select
 from memory  import store as mem_store
 from gates   import state_store
+from docker.runner import build_image, DEFAULT_IMAGE
 import git_ops
 import json
+import os
+import subprocess
 
 ROOT = Path(__file__).parent
 
@@ -149,6 +152,20 @@ def cto_orchestrator(state: GraphState) -> GraphState:
 
     # ── FEATURE SELECTION ────────────────────────────────────────────────────
     if phase == "feature_selection":
+        # Ensure Docker test image exists before spawning workers
+        image = os.environ.get("TEST_IMAGE", DEFAULT_IMAGE)
+        import subprocess
+        r = subprocess.run(["docker", "image", "inspect", image],
+                          capture_output=True, text=True)
+        if r.returncode != 0:
+            print(c(DIM, f"  Building test image: {image}..."))
+            result = build_image(ROOT, image)
+            if result.exit_code != 0:
+                print(c(RED, f"  ✗ Failed to build test image (exit {result.exit_code})"))
+                return {**state, "phase": "implementation",
+                        "last_error": f"docker build failed: exit {result.exit_code}"}
+            print(c(GREEN, "  ✓ Test image built"))
+
         features_raw = _load_features_from_doc2(ROOT)
         passed       = [fid for fid, fr in ps.features.items()
                         if fr.status == FeatureStatus.PASSED]
@@ -199,6 +216,22 @@ def cto_orchestrator(state: GraphState) -> GraphState:
     return state
 
 
+def _ensure_test_image(state: GraphState) -> bool:
+    """Build the Docker test image if it doesn't exist. Returns True if ready."""
+    image = os.environ.get("TEST_IMAGE", DEFAULT_IMAGE)
+    r = subprocess.run(["docker", "image", "inspect", image],
+                      capture_output=True, text=True)
+    if r.returncode == 0:
+        return True
+    print(c(DIM, f"  Building test image: {image}..."))
+    result = build_image(ROOT, image)
+    if result.exit_code != 0:
+        print(c(RED, f"  ✗ Failed to build test image (exit {result.exit_code})"))
+        return False
+    print(c(GREEN, "  ✓ Test image built"))
+    return True
+
+
 def _route_implementation_state(state: GraphState, ps: ProjectState) -> GraphState:
     """Decide what to do next in implementation phase."""
     worker_results  = state.get("worker_results", {}) or {}
@@ -209,6 +242,27 @@ def _route_implementation_state(state: GraphState, ps: ProjectState) -> GraphSta
 
     if ps.is_complete():
         return {**state, "phase": "complete"}
+
+    # If all SELECTED features are done (passed/skipped/failed), stop looping
+    selected = set(state.get("selected_features", []) or [])
+    if selected:
+        statuses = {fid: ps.features[fid].status for fid in selected if fid in ps.features}
+        done     = all(s in ("passed", "skipped", "failed") for s in statuses.values())
+        if done:
+            if all(s == "failed" for s in statuses.values()):
+                print(c(RED, "  All selected features failed — aborting."))
+            else:
+                print(c(GREEN, "  ✓ All selected features complete."))
+            return {**state, "phase": "complete"}
+
+    # Build test image once before any worker runs
+    needs_worker = any(
+        fid not in worker_results for fid in (state.get("feature_contexts", {}) or {})
+    )
+    if needs_worker and not _ensure_test_image(state):
+        print(c(YELLOW, "  Cannot build test image — aborting."))
+        return {**state, "phase": "complete"}
+
     return state  # routing edges handle next node selection
 
 
@@ -274,6 +328,21 @@ def git_node(state: GraphState) -> GraphState:
         if not wr.get("success"):
             # Worker failed — skip git, record failure
             git_results[fid] = {"success": False, "error": "worker_failed", "pr_url": ""}
+            return {**state, "git_results": git_results}
+
+        # The upfront branch-setup loop in feature_selection checks out each
+        # selected feature's branch in turn, leaving the LAST one checked out.
+        # Re-checkout this feature's branch before committing so we never
+        # commit/push this feature's work onto another feature's branch.
+        co = git_ops.checkout_branch(branch, ROOT)
+        if not co.success:
+            print(c(RED, f"  ✗ Could not checkout {branch}: {co.output[:120]}"))
+            git_results[fid] = {"success": False, "error": co.output, "pr_url": ""}
+            ps = state_store.load(ROOT)
+            if fid in ps.features:
+                ps.features[fid].status = FeatureStatus.FAILED
+                ps.features[fid].last_error = f"git checkout failed: {co.stderr[:100]}"
+                state_store.save(ps, ROOT)
             return {**state, "git_results": git_results}
 
         print(c(CYAN, f"  Git: committing {fid}..."))
@@ -554,7 +623,9 @@ def build_graph(db_path: str = "checkpoints.db") -> StateGraph:
     builder.add_conditional_edges("human_gate", route_after_gate,    {"merge":            "merge"})
     builder.add_conditional_edges("merge",     route_after_merge,    {"cto_orchestrator": "cto_orchestrator"})
 
-    checkpointer = SqliteSaver.from_conn_string(db_path)
+    import sqlite3
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    checkpointer = SqliteSaver(conn)
     return builder.compile(
         checkpointer=checkpointer,
         interrupt_before=["human_gate"],
@@ -567,7 +638,7 @@ def build_graph(db_path: str = "checkpoints.db") -> StateGraph:
 
 def _load_features_from_doc2(root: Path):
     from agents.cto import _parse_feature_blocks
-    doc2 = root / "doc2_features_contract.md"
+    doc2 = root / "contracts" / "doc2_features_contract.md"
     if not doc2.exists():
         return []
     return _parse_feature_blocks(doc2.read_text())
