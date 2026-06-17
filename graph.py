@@ -250,7 +250,33 @@ def _route_implementation_state(state: GraphState, ps: ProjectState) -> GraphSta
         done     = all(s in ("passed", "skipped", "failed") for s in statuses.values())
         if done:
             if all(s == "failed" for s in statuses.values()):
-                print(c(RED, "  All selected features failed — aborting."))
+                # Separate genuine failures from cascading blocks.
+                # Blocked features had no chance to run — reset them to pending
+                # so they can be selected again once their dependency is retried.
+                blocked = [
+                    fid for fid in selected
+                    if ps.features[fid].last_error.startswith("Blocked:")
+                ]
+                genuine = [fid for fid in selected if fid not in blocked]
+                for fid in blocked:
+                    ps.features[fid].status = FeatureStatus.PENDING
+                    ps.features[fid].last_error = ""
+                if blocked:
+                    ps.add_log("info", f"Reset {len(blocked)} blocked features to pending: {blocked}")
+                    state_store.save(ps, ROOT)
+                print(c(RED, f"  ✗ {len(genuine)} feature(s) failed: {genuine}"))
+                if blocked:
+                    print(c(YELLOW, f"  {len(blocked)} feature(s) unblocked (reset to pending): {blocked}"))
+                print(c(YELLOW, "  Returning to feature selection — retry the failed feature(s)."))
+                return {**state,
+                        "phase": "feature_selection",
+                        "selected_features": [],
+                        "feature_contexts":  {},
+                        "worker_results":    {},
+                        "git_results":       {},
+                        "validator_results": {},
+                        "merge_results":     {},
+                        "gate_type": None}
             else:
                 print(c(GREEN, "  ✓ All selected features complete."))
             return {**state, "phase": "complete"}
