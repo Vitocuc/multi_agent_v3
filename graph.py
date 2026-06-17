@@ -278,6 +278,25 @@ def worker_node(state: GraphState) -> GraphState:
     for fid, ctx in contexts.items():
         if fid in worker_results:
             continue
+
+        # Block if any dependency failed — don't waste a worker run on doomed code.
+        ps = state_store.load(ROOT)
+        failed_deps = [
+            dep for dep in ctx.get("depends_on", [])
+            if ps.features.get(dep, FeatureRecord(feature_id=dep)).status == FeatureStatus.FAILED
+        ]
+        if failed_deps:
+            error = f"Blocked: dependencies failed — {', '.join(failed_deps)}"
+            print(c(RED, f"  ✗ {fid} blocked: {error}"))
+            ps.features[fid].status = FeatureStatus.FAILED
+            ps.features[fid].last_error = error
+            ps.add_log("error", f"{fid} blocked by failed deps", error)
+            state_store.save(ps, ROOT)
+            return {**state, "worker_results": {
+                **worker_results,
+                fid: {"feature_id": fid, "success": False, "milestone_report": "", "error": error},
+            }}
+
         print(c(BOLD, f"\n  → Worker: {fid} — {ctx['title']}"))
 
         result = worker_agent.run(ctx, ROOT)
