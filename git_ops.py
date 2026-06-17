@@ -13,10 +13,10 @@ Operations:
   merge_pr(feature_id, root)                     — gh pr merge after human approval
   pr_status(feature_id, root)                    — poll review decision + merge state
 """
+
 from __future__ import annotations
 import subprocess
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -24,11 +24,11 @@ from typing import Optional
 
 @dataclass
 class GitResult:
-    success:   bool
-    stdout:    str
-    stderr:    str
+    success: bool
+    stdout: str
+    stderr: str
     exit_code: int
-    command:   str
+    command: str
 
     @property
     def output(self) -> str:
@@ -37,18 +37,22 @@ class GitResult:
 
 @dataclass
 class PRStatus:
-    number:          int
-    state:           str   # OPEN | MERGED | CLOSED
-    review_decision: str   # APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | ""
-    merged:          bool
-    url:             str
+    number: int
+    state: str  # OPEN | MERGED | CLOSED
+    review_decision: str  # APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | ""
+    merged: bool
+    url: str
 
 
 def _run(cmd: list[str], cwd: Path, timeout: int = 60) -> GitResult:
     """Run a shell command and return GitResult. Never raises on non-zero exit."""
     try:
         proc = subprocess.run(
-            cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
+            cmd,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
         return GitResult(
             success=proc.returncode == 0,
@@ -59,19 +63,26 @@ def _run(cmd: list[str], cwd: Path, timeout: int = 60) -> GitResult:
         )
     except subprocess.TimeoutExpired:
         return GitResult(
-            success=False, stdout="", stderr=f"Timeout after {timeout}s",
-            exit_code=124, command=" ".join(cmd),
+            success=False,
+            stdout="",
+            stderr=f"Timeout after {timeout}s",
+            exit_code=124,
+            command=" ".join(cmd),
         )
     except FileNotFoundError as e:
         return GitResult(
-            success=False, stdout="", stderr=str(e),
-            exit_code=127, command=" ".join(cmd),
+            success=False,
+            stdout="",
+            stderr=str(e),
+            exit_code=127,
+            command=" ".join(cmd),
         )
 
 
 # ---------------------------------------------------------------------------
 # Branch setup
 # ---------------------------------------------------------------------------
+
 
 def setup_branch(feature_id: str, branch_name: str, root: Path) -> GitResult:
     """
@@ -98,7 +109,7 @@ def setup_branch(feature_id: str, branch_name: str, root: Path) -> GitResult:
     _run(["git", "pull", "origin", "develop"], root)
 
     # Create feature branch (delete if it already exists to start clean)
-    _run(["git", "branch", "-D", branch_name], root)   # ok if doesn't exist
+    _run(["git", "branch", "-D", branch_name], root)  # ok if doesn't exist
     r = _run(["git", "checkout", "-b", branch_name], root)
     return r
 
@@ -123,6 +134,7 @@ def checkout_branch(branch_name: str, root: Path) -> GitResult:
 # Commit and push
 # ---------------------------------------------------------------------------
 
+
 def commit_and_push(feature_id: str, branch_name: str, root: Path) -> GitResult:
     """
     Stage all changes, commit with standard message, push to origin.
@@ -137,8 +149,11 @@ def commit_and_push(feature_id: str, branch_name: str, root: Path) -> GitResult:
     status = _run(["git", "status", "--porcelain"], root)
     if not status.stdout.strip():
         return GitResult(
-            success=True, stdout="Nothing to commit",
-            stderr="", exit_code=0, command="git status",
+            success=True,
+            stdout="Nothing to commit",
+            stderr="",
+            exit_code=0,
+            command="git status",
         )
 
     # Commit
@@ -156,11 +171,12 @@ def commit_and_push(feature_id: str, branch_name: str, root: Path) -> GitResult:
 # Open PR
 # ---------------------------------------------------------------------------
 
+
 def open_pr(
     feature_id: str,
-    title:      str,
+    title: str,
     report_path: Path,
-    root:       Path,
+    root: Path,
 ) -> GitResult:
     """
     Open a GitHub PR targeting develop.
@@ -175,33 +191,48 @@ def open_pr(
     if existing is not None:
         if existing.merged:
             return GitResult(
-                success=True, stdout=existing.url,
-                stderr="PR already merged", exit_code=0,
+                success=True,
+                stdout=existing.url,
+                stderr="PR already merged",
+                exit_code=0,
                 command="gh pr create (already merged)",
             )
         if existing.state == "OPEN":
             return GitResult(
-                success=True, stdout=existing.url,
+                success=True,
+                stdout=existing.url,
                 stderr="PR already exists — push updates it automatically",
-                exit_code=0, command="gh pr create (existing)",
+                exit_code=0,
+                command="gh pr create (existing)",
             )
 
     if not report_path.exists():
         return GitResult(
-            success=False, stdout="",
+            success=False,
+            stdout="",
             stderr=f"Milestone report not found: {report_path}",
-            exit_code=1, command="gh pr create",
+            exit_code=1,
+            command="gh pr create",
         )
 
     body = report_path.read_text()
     pr_title = f"[{feature_id}] {title}"
 
-    r = _run([
-        "gh", "pr", "create",
-        "--base",  "develop",
-        "--title", pr_title,
-        "--body",  body,
-    ], root, timeout=60)
+    r = _run(
+        [
+            "gh",
+            "pr",
+            "create",
+            "--base",
+            "develop",
+            "--title",
+            pr_title,
+            "--body",
+            body,
+        ],
+        root,
+        timeout=60,
+    )
     return r
 
 
@@ -209,16 +240,26 @@ def open_pr(
 # PR status
 # ---------------------------------------------------------------------------
 
+
 def pr_status(feature_id: str, root: Path) -> Optional[PRStatus]:
     """
     Poll GitHub for the PR associated with this feature.
     Returns PRStatus or None if no PR found.
     """
-    r = _run([
-        "gh", "pr", "list",
-        "--search", f"[{feature_id}] in:title",
-        "--json",   "number,title,state,reviewDecision,mergedAt,url",
-    ], root, timeout=30)
+    r = _run(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--state",  "all",   # include merged/closed, not just open
+            "--search",
+            f"[{feature_id}] in:title",
+            "--json",
+            "number,title,state,reviewDecision,mergedAt,url",
+        ],
+        root,
+        timeout=30,
+    )
 
     if not r.success:
         return None
@@ -245,6 +286,7 @@ def pr_status(feature_id: str, root: Path) -> Optional[PRStatus]:
 # Merge PR
 # ---------------------------------------------------------------------------
 
+
 def merge_pr(feature_id: str, root: Path) -> GitResult:
     """
     Merge the feature PR into develop via squash merge.
@@ -253,22 +295,33 @@ def merge_pr(feature_id: str, root: Path) -> GitResult:
     status = pr_status(feature_id, root)
     if status is None:
         return GitResult(
-            success=False, stdout="",
+            success=False,
+            stdout="",
             stderr=f"No PR found for {feature_id}",
-            exit_code=1, command="gh pr merge",
+            exit_code=1,
+            command="gh pr merge",
         )
 
     if status.merged:
         return GitResult(
-            success=True, stdout="PR already merged",
-            stderr="", exit_code=0, command="gh pr merge",
+            success=True,
+            stdout="PR already merged",
+            stderr="",
+            exit_code=0,
+            command="gh pr merge",
         )
 
-    r = _run([
-        "gh", "pr", "merge",
-        str(status.number),
-        "--squash",
-        "--delete-branch",
-        "--auto",   # merge as soon as checks pass
-    ], root, timeout=60)
+    r = _run(
+        [
+            "gh",
+            "pr",
+            "merge",
+            str(status.number),
+            "--squash",
+            "--delete-branch",
+            "--auto",  # merge as soon as checks pass
+        ],
+        root,
+        timeout=60,
+    )
     return r

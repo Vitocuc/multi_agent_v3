@@ -12,6 +12,7 @@ The worker has NO git access. Its only job is:
 All git operations (branch, commit, push, PR) are handled by the pipeline
 in graph.py using git_ops.py. The worker never touches version control.
 """
+
 from __future__ import annotations
 import os
 import re
@@ -74,7 +75,10 @@ _TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "path":    {"type": "string", "description": "File path relative to project root."},
+                "path": {
+                    "type": "string",
+                    "description": "File path relative to project root.",
+                },
                 "content": {"type": "string", "description": "Full file content."},
             },
             "required": ["path", "content"],
@@ -158,6 +162,7 @@ _TOOLS = [
 # Standing rules loader
 # ---------------------------------------------------------------------------
 
+
 def _load_standing_rules(root: Path) -> str:
     """Load CLAUDE.md and .claude/rules/*.md into the system prompt."""
     parts = []
@@ -181,6 +186,7 @@ def _load_standing_rules(root: Path) -> str:
 # Main entry point
 # ---------------------------------------------------------------------------
 
+
 def run(context: FeatureContext, root: Path = ROOT) -> WorkerResult:
     """
     Run the worker for one feature.
@@ -195,25 +201,38 @@ def run(context: FeatureContext, root: Path = ROOT) -> WorkerResult:
     try:
         runner.verify()
     except DockerNotAvailableError as e:
-        return WorkerResult(feature_id=fid, success=False, milestone_report="",
-                            error=f"Docker not available: {e}")
+        return WorkerResult(
+            feature_id=fid,
+            success=False,
+            milestone_report="",
+            error=f"Docker not available: {e}",
+        )
     except ImageNotBuiltError as e:
-        return WorkerResult(feature_id=fid, success=False, milestone_report="",
-                            error=f"Test image not built: {e}")
+        return WorkerResult(
+            feature_id=fid,
+            success=False,
+            milestone_report="",
+            error=f"Test image not built: {e}",
+        )
 
     api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if not api_key:
-        return WorkerResult(feature_id=fid, success=False, milestone_report="",
-                            error="ANTHROPIC_API_KEY not set in .env")
+        return WorkerResult(
+            feature_id=fid,
+            success=False,
+            milestone_report="",
+            error="ANTHROPIC_API_KEY not set in .env",
+        )
 
-    model   = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
+    model = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
     mem_str = json.dumps(context["memory"], indent=2)
 
     # Build initial prompt
     retry_note = context.get("retry_note", "")
     retry_section = (
         f"## Previous attempt failed — read this first\n\n{retry_note}\n\n"
-        if retry_note else ""
+        if retry_note
+        else ""
     )
 
     initial_prompt = (
@@ -239,7 +258,7 @@ def run(context: FeatureContext, root: Path = ROOT) -> WorkerResult:
     )
 
     # Build system prompt: base rules + CLAUDE.md + rules files
-    # Sent as a cached content block — identical across all 40 turns so only
+    # Sent as a cached content block — identical across all 80 turns so only
     # billed at full token cost once per session (subsequent turns hit cache).
     standing_rules = _load_standing_rules(root)
     system = _WORKER_SYSTEM
@@ -248,23 +267,30 @@ def run(context: FeatureContext, root: Path = ROOT) -> WorkerResult:
 
     messages = [{"role": "user", "content": initial_prompt}]
 
-    # Agentic loop — 40 turns max
-    for turn in range(40):
-        payload = json.dumps({
-            "model":      model,
-            "max_tokens": 16384,   # generous — complex features need room
-            "system": [{"type": "text", "text": system,
-                        "cache_control": {"type": "ephemeral"}}],
-            "tools":      _TOOLS,
-            "messages":   messages,
-        }).encode()
+    # Agentic loop — 80 turns max
+    for turn in range(80):
+        payload = json.dumps(
+            {
+                "model": model,
+                "max_tokens": 16384,  # generous — complex features need room
+                "system": [
+                    {
+                        "type": "text",
+                        "text": system,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+                "tools": _TOOLS,
+                "messages": messages,
+            }
+        ).encode()
 
         req = urllib.request.Request(
             "https://api.anthropic.com/v1/messages",
             data=payload,
             headers={
-                "Content-Type":      "application/json",
-                "x-api-key":         api_key,
+                "Content-Type": "application/json",
+                "x-api-key": api_key,
                 "anthropic-version": "2023-06-01",
             },
             method="POST",
@@ -280,27 +306,41 @@ def run(context: FeatureContext, root: Path = ROOT) -> WorkerResult:
                 body = e.read().decode()[:300]
                 if attempt < 3 and e.code in (500, 502, 503, 529):
                     wait = 10 * attempt
-                    print(f"  [worker] HTTP {e.code} — retrying in {wait}s (attempt {attempt}/3)")
-                    import time; time.sleep(wait)
+                    print(
+                        f"  [worker] HTTP {e.code} — retrying in {wait}s (attempt {attempt}/3)"
+                    )
+                    import time
+
+                    time.sleep(wait)
                     last_err = f"HTTP {e.code}: {body}"
                     continue
-                return WorkerResult(feature_id=fid, success=False,
-                                    milestone_report="", error=f"HTTP {e.code}: {body}")
+                return WorkerResult(
+                    feature_id=fid,
+                    success=False,
+                    milestone_report="",
+                    error=f"HTTP {e.code}: {body}",
+                )
             except Exception as e:
                 if attempt < 3:
                     wait = 10 * attempt
-                    print(f"  [worker] {type(e).__name__} — retrying in {wait}s (attempt {attempt}/3)")
-                    import time; time.sleep(wait)
+                    print(
+                        f"  [worker] {type(e).__name__} — retrying in {wait}s (attempt {attempt}/3)"
+                    )
+                    import time
+
+                    time.sleep(wait)
                     last_err = str(e)
                     continue
-                return WorkerResult(feature_id=fid, success=False,
-                                    milestone_report="", error=str(e))
+                return WorkerResult(
+                    feature_id=fid, success=False, milestone_report="", error=str(e)
+                )
         else:
-            return WorkerResult(feature_id=fid, success=False,
-                                milestone_report="", error=last_err)
+            return WorkerResult(
+                feature_id=fid, success=False, milestone_report="", error=last_err
+            )
 
         stop_reason = resp.get("stop_reason")
-        content     = resp.get("content", [])
+        content = resp.get("content", [])
         messages.append({"role": "assistant", "content": content})
 
         if stop_reason == "end_turn":
@@ -313,7 +353,9 @@ def run(context: FeatureContext, root: Path = ROOT) -> WorkerResult:
                     error="",
                 )
             return WorkerResult(
-                feature_id=fid, success=False, milestone_report="",
+                feature_id=fid,
+                success=False,
+                milestone_report="",
                 error="Worker finished but milestone report not found in reports/",
             )
 
@@ -323,23 +365,30 @@ def run(context: FeatureContext, root: Path = ROOT) -> WorkerResult:
                 if block.get("type") != "tool_use":
                     continue
                 result_str = _execute_tool(block["name"], block["input"], root, runner)
-                tool_results.append({
-                    "type":        "tool_result",
-                    "tool_use_id": block["id"],
-                    "content":     result_str,
-                })
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block["id"],
+                        "content": result_str,
+                    }
+                )
             messages.append({"role": "user", "content": tool_results})
             continue
 
         break
 
-    return WorkerResult(feature_id=fid, success=False, milestone_report="",
-                        error="Worker exceeded 40 turns without completing")
+    return WorkerResult(
+        feature_id=fid,
+        success=False,
+        milestone_report="",
+        error="Worker exceeded 80 turns without completing",
+    )
 
 
 # ---------------------------------------------------------------------------
 # Tool executor
 # ---------------------------------------------------------------------------
+
 
 def _execute_tool(name: str, inp: dict, root: Path, runner: DockerRunner) -> str:
     try:
@@ -367,8 +416,16 @@ def _execute_tool(name: str, inp: dict, root: Path, runner: DockerRunner) -> str
                 return f"Error: '{directory}' is not a directory"
 
             _SKIP_DIRS = {
-                ".git", "node_modules", "__pycache__", ".pytest_cache",
-                "venv", ".venv", "dist", "build", ".mypy_cache", ".tox",
+                ".git",
+                "node_modules",
+                "__pycache__",
+                ".pytest_cache",
+                "venv",
+                ".venv",
+                "dist",
+                "build",
+                ".mypy_cache",
+                ".tox",
             }
             lines: list[str] = []
 
@@ -376,7 +433,9 @@ def _execute_tool(name: str, inp: dict, root: Path, runner: DockerRunner) -> str
                 if depth > 5:
                     return
                 try:
-                    entries = sorted(path.iterdir(), key=lambda p: (p.is_file(), p.name))
+                    entries = sorted(
+                        path.iterdir(), key=lambda p: (p.is_file(), p.name)
+                    )
                 except PermissionError:
                     return
                 for entry in entries:
@@ -394,12 +453,20 @@ def _execute_tool(name: str, inp: dict, root: Path, runner: DockerRunner) -> str
 
         elif name == "grep":
             import re as _re
+
             pattern = inp.get("pattern", "")
             glob_pat = inp.get("glob", "**/*")
 
             _SKIP_DIRS = {
-                ".git", "node_modules", "__pycache__", ".pytest_cache",
-                "venv", ".venv", "dist", "build", ".mypy_cache",
+                ".git",
+                "node_modules",
+                "__pycache__",
+                ".pytest_cache",
+                "venv",
+                ".venv",
+                "dist",
+                "build",
+                ".mypy_cache",
             }
 
             try:
@@ -422,7 +489,9 @@ def _execute_tool(name: str, inp: dict, root: Path, runner: DockerRunner) -> str
                         rel = filepath.relative_to(root)
                         matches.append(f"{rel}:{i}: {line.rstrip()}")
                 if len(matches) >= 150:
-                    matches.append("...[truncated — too many matches, narrow your pattern]...")
+                    matches.append(
+                        "...[truncated — too many matches, narrow your pattern]..."
+                    )
                     break
 
             if not matches:
@@ -433,7 +502,7 @@ def _execute_tool(name: str, inp: dict, root: Path, runner: DockerRunner) -> str
             return result_str
 
         elif name == "test_runner":
-            phase   = inp.get("phase", "")
+            phase = inp.get("phase", "")
             command = inp.get("command", "")
             if not command:
                 return f"Error: command is required for test_runner phase={phase}"

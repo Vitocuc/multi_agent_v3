@@ -2,7 +2,7 @@
 
 A pipeline that helps you build software projects. You describe the idea, the system plans it, implements features, and validates them. You stay in control at every key decision point.
 
-**Last updated: 14 June 2026**
+**Last updated: 17 June 2026**
 
 ---
 
@@ -10,6 +10,14 @@ A pipeline that helps you build software projects. You describe the idea, the sy
 
 | Date | Change |
 |---|---|
+| 17 Jun 2026 | `setup_branch` now pushes `develop` and the feature branch to origin immediately — eliminates "No commits between develop and feature/..." error on `gh pr create` |
+| 17 Jun 2026 | `pr_status` and `cmd_gh_check` now pass `--state all` to `gh pr list` — merged PRs are found correctly, not just open ones |
+| 17 Jun 2026 | `merge_node` now sets feature status to `PASSED` on successful merge and `FAILED` on failure — previously the feature stayed `in_progress` forever, causing an infinite routing loop |
+| 17 Jun 2026 | `_PruningCheckpointer` replaces bare `SqliteSaver` — keeps only the last 5 checkpoint rows per thread; DB stays under 1 MB regardless of routing bugs |
+| 17 Jun 2026 | `_stream` recursion limit capped at 200 (LangGraph default is 10,007); routing loops now fail fast with a clear message instead of filling disk |
+| 17 Jun 2026 | Added `python3 run.py recover` — deletes a bloated/corrupt `checkpoints.db` and seeds a fresh checkpoint at `feature_selection` from `project_state.json` |
+| 17 Jun 2026 | `cmd_resume` with no arguments now auto-resets to `feature_selection` when phase is `complete` but pending features remain — no manual state manipulation needed between batches |
+| 17 Jun 2026 | CI workflow fixes: `pip-audit --severity HIGH` → `pip-audit -r requirements.txt` (flag doesn't exist); `bandit --severity-level HIGH` → `--severity-level high` (must be lowercase); removed redundant `-l` flag |
 | 16 Jun 2026 | Added `app_type` field (`api`/`frontend`/`fullstack`) — validator generates Playwright browser tests for frontend/fullstack, requests-based HTTP tests for pure APIs |
 | 16 Jun 2026 | `Dockerfile.test` now includes Playwright + Chromium for browser-level validation |
 | 14 Jun 2026 | Added `services` + `app_env` to the shared plan — apps needing a database, cache, or queue get those started on the shared Docker network before the app, with connection env vars injected |
@@ -97,7 +105,7 @@ Every stage of the pipeline does work that falls into one of three categories: d
 | Contracts (doc1–3) | parses doc2 into feature blocks, saves files | all contract content, consistency check | approve / reject |
 | Feature selection | menu CLI, dependency chain, memory filtering | spawn plan grouping (parallel vs sequential) | selection |
 | Git branch setup | 100% — `git_ops.setup_branch` | — | — |
-| Worker implementation | tool execution (file I/O, Docker exec), 40-turn loop control, standing-rules loading | **all the code, all the milestone report content** | — |
+| Worker implementation | tool execution (file I/O, Docker exec), 80-turn loop control, standing-rules loading | **all the code, all the milestone report content** | — |
 | git_node (commit/push/PR) | 100% — `git_ops.py` | — | — |
 | Validator: test generation | doc3 parsing, function-name mapping, syntax/retry checks | generates pytest code from spec | — |
 | Validator: test execution + scoring | 100% — Docker start/stop, real pytest results, regex result mapping | — | — |
@@ -395,6 +403,9 @@ python3 run.py gh-check F-01-001
 python3 run.py retry F-01-001
 python3 run.py retry F-01-001 --force   # bypass the retry cap
 
+# Rebuild checkpoint from project_state.json (use after a corrupt or bloated checkpoints.db)
+python3 run.py recover
+
 # Check project state at any time
 python3 run.py status
 
@@ -403,9 +414,11 @@ python3 run.py memory
 python3 run.py memory F-01-002
 ```
 
-`gh-check` polls GitHub for the PR associated with a feature ID. If the PR is approved or merged, it writes `human_gate: approved` into the milestone report and marks the feature ready for validation. Run it after you approve the PR on GitHub, then run `resume`.
+`gh-check` polls GitHub for the PR associated with a feature ID. It searches all PRs (open, merged, and closed) for the feature ID in the title. If the PR is approved or merged, it writes `human_gate: approved` into the milestone report and marks the feature ready for validation. Run it after you approve the PR on GitHub, then run `resume`.
 
 `retry` requeues a `FAILED` feature — see [Retrying a failed feature](#retrying-a-failed-feature) below.
+
+`recover` is used when `checkpoints.db` is corrupt, bloated (e.g. after a routing loop filled it to several GB), or missing. It deletes the file, rebuilds a minimal fresh checkpoint at `feature_selection` phase, and reads all feature statuses from `project_state.json` — which is always the source of truth. Feature statuses (passed, failed, pending) are preserved exactly.
 
 ---
 
@@ -436,6 +449,8 @@ Nodes that run AI: `cto_orchestrator`, `worker_node`, `validator_node` (code gen
 Nodes that run python3 only: `git_node`, `merge_node`, `human_gate`.
 
 The graph is checkpointed to `checkpoints.db` after every node. A crash or `Ctrl+C` at any point is safe — `python3 run.py resume` continues from the last completed node.
+
+The checkpointer keeps only the last 5 checkpoint rows per thread (`_PruningCheckpointer`). The DB stays small regardless of how many features have run. If it ever becomes bloated or corrupt, `python3 run.py recover` rebuilds it from `project_state.json` in seconds.
 
 ---
 
@@ -485,7 +500,7 @@ The table above shows boundaries by role. This table shows the same pipeline fro
 | Contracts (doc1–3) | parses doc2 into feature blocks, saves files | all contract content, consistency check | approve/reject |
 | Feature selection | menu CLI, dependency chain, memory filtering | spawn plan grouping (parallel vs sequential) | selection |
 | Git branch setup | 100% (`git_ops.setup_branch`) | — | — |
-| Worker implementation | tool execution (file I/O, Docker exec), 40-turn loop control, standing-rules loading | **all the code, all the milestone report content** | — |
+| Worker implementation | tool execution (file I/O, Docker exec), 80-turn loop control, standing-rules loading | **all the code, all the milestone report content** | — |
 | git_node (commit/push/PR) | 100% (`git_ops.py`) | — | — |
 | Validator: test generation | doc3 parsing, function-name mapping, syntax/retry checks | generates pytest code from spec | — |
 | Validator: test generation | doc3 parsing, function-name mapping, syntax/retry checks | generates pytest code (requests or Playwright depending on app_type) | — |
@@ -673,11 +688,11 @@ All feature branches are cut from `develop`, not `main`.
 ```
 main        ← stable releases only (human decision after milestone)
   └── develop   ← integration branch; all PRs target this
-        └── feature/F-01-001-user-login    ← created by git_ops.py
-        └── feature/F-01-002-user-auth     ← created by git_ops.py
+        └── feature/F-01-001-user-login    ← created and pushed by git_ops.py
+        └── feature/F-01-002-user-auth     ← created and pushed by git_ops.py
 ```
 
-The pipeline creates feature branches automatically during `feature_selection` phase. Workers never touch git. After validation passes, `merge_node` squash-merges the feature branch into `develop` and deletes the branch.
+The pipeline creates feature branches automatically just before each worker runs (`setup_branch`). It immediately pushes both `develop` and the feature branch to origin — so `gh pr create --base develop` always works even on a fresh clone. Workers never touch git. After validation passes, `merge_node` squash-merges the feature branch into `develop` and deletes the branch.
 
 The `develop` → `main` merge is always a human decision made after a full milestone completes. The pipeline never touches `main`.
 
@@ -713,7 +728,7 @@ Run `python3 run.py docker-build` first.
 **"No checkpoint found. Run start first."**
 `checkpoints.db` is missing or corrupt. Run `python3 run.py start`.
 
-**Worker exceeded 40 turns**
+**Worker exceeded 80 turns**
 The feature was too complex for one session. Read `reports/{feature_id}_milestone.md` to see what was partially done. Split the feature in doc2 into smaller pieces, then requeue.
 
 **"git push failed"**
@@ -723,7 +738,17 @@ The `git_node` couldn't push. Most common cause: the remote branch already exist
 `GITHUB_TOKEN` is not set or lacks repo scope. Check `.env`, regenerate the token if needed. The PR can be opened manually on GitHub — the pipeline will continue when you run `gh-check`.
 
 **`gh-check` returns "no PR found"**
-The worker may not have filed the milestone report correctly, so `git_node` may not have opened the PR. Check `reports/` for the milestone file and check GitHub for a PR with the feature ID in the title. If missing, the feature can be requeued.
+Two causes. (1) The PR was already merged — `gh-check` searches all states (`--state all`), so this should now resolve automatically. If it still fails, confirm the PR title contains `[F-01-001]` exactly. (2) `git_node` never pushed the branch — check `git log` for the expected commit and `gh pr list --state all` on GitHub. If the PR is missing entirely, push the branch manually and open the PR with the milestone report as the body, then re-run `gh-check`.
+
+**`checkpoints.db` is very large / process OOM-killed**
+A routing loop (e.g. a bug that caused infinite recursion) wrote thousands of checkpoint rows, filling the DB to several GB. Fix:
+```bash
+python3 run.py recover
+```
+This deletes the DB, rebuilds a minimal checkpoint at `feature_selection`, and reads all feature statuses from `project_state.json`. Takes under 5 seconds. Feature statuses (passed/failed/pending) are fully preserved.
+
+**Pipeline hits recursion limit ("Routing loop detected")**
+The graph cycled more than 200 times without hitting a stop condition. This means a routing bug exists — look at the last few pipeline log lines to identify which node was cycling. After fixing the bug, run `python3 run.py recover` to clear the stale checkpoint and continue.
 
 **"Playwright tests fail with 'browser was not found'"**
 The Chromium binary is not installed in the test image. Rebuild with `python3 run.py docker-build` — the current `Dockerfile.test` runs `playwright install chromium --with-deps` during the build, so this only happens if you're using an old image. After rebuilding, the binary is baked into the layer and no download happens at test time.
@@ -774,7 +799,7 @@ python3 run.py start
 | `validation/*_test.py` | Validator | Generated pytest files. Read-only for you — useful for debugging a failed validation. Commit to git as audit trail. |
 | `memory.json` | Pipeline | Never edit — append-only, managed after each milestone. |
 | `project_state.json` | Pipeline | Never edit — managed by `gates/state_store.py`. |
-| `checkpoints.db` | LangGraph | Never edit. |
+| `checkpoints.db` | LangGraph | Never edit directly. Safe to delete — `python3 run.py recover` rebuilds it from `project_state.json`. Pruned automatically to the last 5 rows per thread. |
 | `CLAUDE.md` | You | Adjust worker standing instructions. Changes take effect immediately on the next worker invocation. |
 | `.claude/rules/*.md` | You | Adjust implementation rules. Loaded by both Claude Code (automatic) and the API worker (injected). |
 | `git_ops.py` | Pipeline | Do not edit unless you understand the execution graph. |
