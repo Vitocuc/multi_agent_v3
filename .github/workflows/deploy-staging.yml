@@ -1,0 +1,181 @@
+# Deploy to Staging — automatic after all security gates pass
+# Feature F-01-002: CI/CD Pipeline with Security Gates
+#
+# Triggered on merge to `develop`. Deploys to the staging environment
+# automatically after all CI security gates pass. No human approval
+# required for staging — only for production.
+#
+# All credentials are injected via GitHub Actions Secrets at runtime.
+# No secrets are hardcoded in this file.
+
+name: Deploy — Staging
+
+on:
+  push:
+    branches:
+      - develop
+
+permissions:
+  contents: read
+  id-token: write   # Required for OIDC authentication with AWS
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # Confirm all CI gates passed (re-run security checks on merge commit)
+  # ─────────────────────────────────────────────────────────────
+  security-gates:
+    name: Security Gate Verification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install security tools
+        run: pip install pip-audit bandit
+
+      - name: Install project dependencies
+        run: pip install -r requirements.txt
+
+      - name: pip-audit — dependency CVE scan (HIGH/CRITICAL fail)
+        run: pip-audit --requirement requirements.txt --severity HIGH
+
+      - name: Bandit — SAST Python (HIGH severity fail)
+        run: |
+          bandit -r . \
+            --severity-level HIGH \
+            --exclude ./.venv,./venv,./.git,./infra,./tests,./validation \
+            -f json \
+            -o bandit-report.json || \
+          (echo "Bandit found HIGH/CRITICAL findings — deployment blocked" && cat bandit-report.json && exit 1)
+
+      - name: Gitleaks — Secret scanning
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+  # ─────────────────────────────────────────────────────────────
+  # Build Docker image (tagged with commit SHA)
+  # ─────────────────────────────────────────────────────────────
+  build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: security-gates
+    outputs:
+      image_tag: ${{ github.sha }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push to ECR (staging)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}
+            ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:staging-latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ─────────────────────────────────────────────────────────────
+  # Trivy — container image scan (CRITICAL fail)
+  # ─────────────────────────────────────────────────────────────
+  trivy-scan:
+    name: Trivy — Container Scan
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Run Trivy on pushed image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}"
+          format: "table"
+          exit-code: "1"
+          ignore-unfixed: false
+          vuln-type: "os,library"
+          severity: "CRITICAL"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+
+  # ─────────────────────────────────────────────────────────────
+  # Deploy to staging (automatic — no human approval required)
+  # ─────────────────────────────────────────────────────────────
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: trivy-scan
+    environment: staging
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Deploy to ECS — Staging
+        env:
+          ECS_CLUSTER: ${{ secrets.ECS_CLUSTER_STAGING }}
+          ECS_SERVICE: ${{ secrets.ECS_SERVICE_STAGING }}
+          ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          # Update ECS service to use new image
+          aws ecs update-service \
+            --cluster "${ECS_CLUSTER}" \
+            --service "${ECS_SERVICE}" \
+            --force-new-deployment
+
+          # Wait for deployment to stabilize
+          aws ecs wait services-stable \
+            --cluster "${ECS_CLUSTER}" \
+            --services "${ECS_SERVICE}"
+
+          echo "Staging deployment completed: ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          # NOTE: The IMAGE_TAG is the commit SHA — never a secret value.
+
+      - name: Verify staging health check
+        env:
+          STAGING_URL: ${{ secrets.STAGING_APP_URL }}
+        run: |
+          # Wait for the service to respond
+          for i in $(seq 1 10); do
+            status=$(curl -s -o /dev/null -w "%{http_code}" "${STAGING_URL}/health" || echo "000")
+            if [ "$status" = "200" ]; then
+              echo "Staging health check passed"
+              exit 0
+            fi
+            echo "Attempt ${i}/10: HTTP ${status} — retrying in 15s..."
+            sleep 15
+          done
+          echo "Staging health check failed after 10 attempts"
+          exit 1

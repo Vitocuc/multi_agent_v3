@@ -1,0 +1,57 @@
+# Environment secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Terraform state — stored in S3 backend, never in repo
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+
+# Root-level terraform.tfvars may contain secrets — never commit
+terraform.tfvars
+
+# Terraform plan output — may contain sensitive values
+*.tfplan
+*.plan
+
+# Allow committed env/*.tfvars (no secrets, only infra sizing config)
+# But exclude any local override files that might contain secrets
+infra/terraform/env/*.local.tfvars
+infra/terraform/env/*.secret.tfvars
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+.pytest_cache/
+.mypy_cache/
+dist/
+build/
+*.egg-info/
+.eggs/
+venv/
+.venv/
+env/
+ENV/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/

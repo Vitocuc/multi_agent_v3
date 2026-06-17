@@ -20,6 +20,7 @@ Flow:
 
 Zero git access. Never modifies application source.
 """
+
 from __future__ import annotations
 import ast
 import re
@@ -98,8 +99,8 @@ Rules:
 11. The file must run standalone with: pytest <file> -v --browser chromium"""
 
 _CODEGEN_SYSTEM_BY_TYPE = {
-    "api":       _CODEGEN_API,
-    "frontend":  _CODEGEN_PLAYWRIGHT,
+    "api": _CODEGEN_API,
+    "frontend": _CODEGEN_PLAYWRIGHT,
     "fullstack": _CODEGEN_PLAYWRIGHT,
 }
 
@@ -114,9 +115,9 @@ def _strip_fences(text: str) -> str:
 def _generate_test_code(
     feature_id: str,
     test_cases: List[Dict],
-    base_url:   str,
-    app_type:   str,
-    provider:   str,
+    base_url: str,
+    app_type: str,
+    provider: str,
 ) -> str:
     """
     Generate a pytest file from doc3 test case specs.
@@ -126,11 +127,13 @@ def _generate_test_code(
       fullstack  → Playwright + requests for API-level security cases
     Retries up to CODEGEN_MAX_ATTEMPTS on syntax errors or missing functions.
     """
-    system      = _CODEGEN_SYSTEM_BY_TYPE.get(app_type, _CODEGEN_API)
-    required_fns = {tc["test_id"]: f"test_{tc['test_id'].replace('-', '_')}" for tc in test_cases}
+    system = _CODEGEN_SYSTEM_BY_TYPE.get(app_type, _CODEGEN_API)
+    required_fns = {
+        tc["test_id"]: f"test_{tc['test_id'].replace('-', '_')}" for tc in test_cases
+    }
 
     spec_text = "\n\n".join(tc["raw"] for tc in test_cases)
-    fn_list   = "\n".join(f"- {tid} -> def {fn}(...)" for tid, fn in required_fns.items())
+    fn_list = "\n".join(f"- {tid} -> def {fn}(...)" for tid, fn in required_fns.items())
 
     prompt = (
         f"Base URL of the running application: {base_url}\n"
@@ -141,28 +144,34 @@ def _generate_test_code(
         "Generate the pytest file now."
     )
 
-    messages  = [user_msg(prompt)]
+    messages = [user_msg(prompt)]
     last_code = ""
 
     for attempt in range(1, CODEGEN_MAX_ATTEMPTS + 1):
-        raw  = call(provider, messages, system, temperature=0.2, max_tokens=8192)
+        raw = call(provider, messages, system, temperature=0.2, max_tokens=8192)
         code = _strip_fences(raw)
         last_code = code
 
         try:
             ast.parse(code)
         except SyntaxError as e:
-            messages += [assistant_msg(raw), user_msg(
-                f"SyntaxError: {e}. Return the full corrected file, raw Python only."
-            )]
+            messages += [
+                assistant_msg(raw),
+                user_msg(
+                    f"SyntaxError: {e}. Return the full corrected file, raw Python only."
+                ),
+            ]
             continue
 
         missing = [fn for fn in required_fns.values() if f"def {fn}" not in code]
         if missing:
-            messages += [assistant_msg(raw), user_msg(
-                f"Missing required test functions: {missing}. "
-                "Return the FULL corrected file with all required functions, raw Python only."
-            )]
+            messages += [
+                assistant_msg(raw),
+                user_msg(
+                    f"Missing required test functions: {missing}. "
+                    "Return the FULL corrected file with all required functions, raw Python only."
+                ),
+            ]
             continue
 
         return code
@@ -174,6 +183,7 @@ def _generate_test_code(
 # doc3 parsing
 # ---------------------------------------------------------------------------
 
+
 def _extract_suite(feature_id: str, root: Path) -> str:
     doc3 = root / "contracts" / "doc3_validation_contract.md"
     if not doc3.exists():
@@ -181,7 +191,8 @@ def _extract_suite(feature_id: str, root: Path) -> str:
     text = doc3.read_text()
     m = re.search(
         rf"### Suite {re.escape(feature_id)}.*?\n(.*?)(?=\n###|\n##|\Z)",
-        text, re.DOTALL,
+        text,
+        re.DOTALL,
     )
     return m.group(1).strip() if m else ""
 
@@ -215,14 +226,16 @@ def _parse_test_cases(yaml_text: str) -> List[Dict]:
         tid_m = re.search(r'test_id:\s*"?([\w-]+)"?', block)
         if not tid_m:
             continue
-        type_m     = re.search(r"^\s*type:\s*(\w+)", block, re.MULTILINE)
+        type_m = re.search(r"^\s*type:\s*(\w+)", block, re.MULTILINE)
         blocking_m = re.search(r"blocking:\s*(true|false)", block)
-        cases.append({
-            "test_id":  tid_m.group(1),
-            "type":     type_m.group(1) if type_m else "unit",
-            "blocking": (blocking_m.group(1) == "true") if blocking_m else True,
-            "raw":      block,
-        })
+        cases.append(
+            {
+                "test_id": tid_m.group(1),
+                "type": type_m.group(1) if type_m else "unit",
+                "blocking": (blocking_m.group(1) == "true") if blocking_m else True,
+                "raw": block,
+            }
+        )
     return cases
 
 
@@ -231,7 +244,8 @@ def _parse_test_cases(yaml_text: str) -> List[Dict]:
 # ---------------------------------------------------------------------------
 
 _SECRET_PATTERN = re.compile(
-    r"(api.?key|token|password|secret|credential)\s*[:=]\s*\S+", re.IGNORECASE,
+    r"(api.?key|token|password|secret|credential)\s*[:=]\s*\S+",
+    re.IGNORECASE,
 )
 
 
@@ -241,7 +255,7 @@ def _check_security(report_text: str) -> Tuple[List[str], List[str]]:
     Returns (failures, escalations) — both lists of "SEC-GLOBAL-NN" ids.
     Pure string/regex checks. No model call — deterministic and free.
     """
-    failures:    List[str] = []
+    failures: List[str] = []
     escalations: List[str] = []
 
     # SEC-GLOBAL-02 — security checklist followed
@@ -250,7 +264,7 @@ def _check_security(report_text: str) -> Tuple[List[str], List[str]]:
         failures.append("SEC-GLOBAL-02")
         escalations.append("SEC-GLOBAL-02")
 
-    cmds_m    = re.search(r"## Commands run\s*```yaml\n(.*?)```", report_text, re.DOTALL)
+    cmds_m = re.search(r"## Commands run\s*```yaml\n(.*?)```", report_text, re.DOTALL)
     cmds_text = cmds_m.group(1) if cmds_m else ""
 
     # SEC-GLOBAL-01 — no secrets in command summaries
@@ -261,14 +275,17 @@ def _check_security(report_text: str) -> Tuple[List[str], List[str]]:
     # SEC-GLOBAL-03 — dependency audit ran clean
     audit_entries = re.findall(
         r'cmd:\s*"[^"]*audit[^"]*".*?exit_code:\s*(\d+).*?stdout_summary:\s*"([^"]*)"',
-        cmds_text, re.DOTALL | re.IGNORECASE,
+        cmds_text,
+        re.DOTALL | re.IGNORECASE,
     )
     if not audit_entries:
         failures.append("SEC-GLOBAL-03")
         escalations.append("SEC-GLOBAL-03")
     else:
         for exit_code, summary in audit_entries:
-            if exit_code != "0" or re.search(r"\b(high|critical)\b", summary, re.IGNORECASE):
+            if exit_code != "0" or re.search(
+                r"\b(high|critical)\b", summary, re.IGNORECASE
+            ):
                 failures.append("SEC-GLOBAL-03")
                 escalations.append("SEC-GLOBAL-03")
                 break
@@ -280,32 +297,35 @@ def _check_security(report_text: str) -> Tuple[List[str], List[str]]:
 # Main entry point
 # ---------------------------------------------------------------------------
 
+
 def run(
-    feature_id:       str,
+    feature_id: str,
     milestone_report: str,
-    provider:         str  = "gemini",
-    root:             Path = ROOT,
+    provider: str = "gemini",
+    root: Path = ROOT,
 ) -> GValidatorResult:
     suite_block = _extract_suite(feature_id, root)
-    yaml_text   = _extract_test_cases_yaml(suite_block)
-    test_cases  = _parse_test_cases(yaml_text)
+    yaml_text = _extract_test_cases_yaml(suite_block)
+    test_cases = _parse_test_cases(yaml_text)
 
     app_config = get_app_config(root)
-    app_type     = app_config.get("app_type", "api")
-    app_cmd      = app_config["run_command"]
-    app_port     = app_config["port"]
-    app_env      = app_config.get("env", {}) or {}
-    services     = app_config.get("services", []) or []
+    app_type = app_config.get("app_type", "api")
+    app_cmd = app_config["run_command"]
+    app_port = app_config["port"]
+    app_env = app_config.get("env", {}) or {}
+    services = app_config.get("services", []) or []
 
     container_name = f"app-{feature_id.lower()}"
-    base_url        = f"http://{container_name}:{app_port}"
+    base_url = f"http://{container_name}:{app_port}"
 
-    results:     List[Dict] = []
+    results: List[Dict] = []
     runtime_note = ""
 
     if test_cases and app_cmd and app_port:
         # 1. Generate executable tests from doc3 — Gemini sees only the spec
-        test_code = _generate_test_code(feature_id, test_cases, base_url, app_type, provider)
+        test_code = _generate_test_code(
+            feature_id, test_cases, base_url, app_type, provider
+        )
 
         validation_dir = root / "validation"
         validation_dir.mkdir(exist_ok=True)
@@ -316,7 +336,9 @@ def run(
         # - frontend/fullstack: add --headed=no and chromium (headless already default in Playwright)
         rel_path = f"validation/{feature_id}_test.py"
         if app_type == "api":
-            pytest_cmd = f"python3 -m pytest {rel_path} -v --tb=short -p no:cacheprovider"
+            pytest_cmd = (
+                f"python3 -m pytest {rel_path} -v --tb=short -p no:cacheprovider"
+            )
         else:
             pytest_cmd = (
                 f"python3 -m pytest {rel_path} -v --tb=short -p no:cacheprovider "
@@ -336,7 +358,9 @@ def run(
                 svc_container = svc["name"]
                 started_services.append(svc_container)
                 if not sr.success:
-                    runtime_note = f"Service '{svc_container}' failed to start: {sr.summary}"
+                    runtime_note = (
+                        f"Service '{svc_container}' failed to start: {sr.summary}"
+                    )
                     services_ready = False
                     break
                 if not runner.wait_for_service(svc_container, svc["port"]):
@@ -350,11 +374,15 @@ def run(
 
             if not services_ready:
                 for tc in test_cases:
-                    results.append({
-                        "test_id": tc["test_id"], "status": "fail",
-                        "notes": "a required service did not start — see milestone report note",
-                        "type": tc["type"], "blocking": tc["blocking"],
-                    })
+                    results.append(
+                        {
+                            "test_id": tc["test_id"],
+                            "status": "fail",
+                            "notes": "a required service did not start — see milestone report note",
+                            "type": tc["type"],
+                            "blocking": tc["blocking"],
+                        }
+                    )
             else:
                 # 2b. Start the app, with app_env pointing at the services by name
                 runner.start_app(app_cmd, app_port, container_name, extra_env=app_env)
@@ -362,13 +390,19 @@ def run(
 
                 if not ready:
                     logs = runner.get_app_logs(container_name)
-                    runtime_note = f"App did not become ready. Last logs:\n{logs[-800:]}"
+                    runtime_note = (
+                        f"App did not become ready. Last logs:\n{logs[-800:]}"
+                    )
                     for tc in test_cases:
-                        results.append({
-                            "test_id": tc["test_id"], "status": "fail",
-                            "notes": "app did not start — see milestone report note",
-                            "type": tc["type"], "blocking": tc["blocking"],
-                        })
+                        results.append(
+                            {
+                                "test_id": tc["test_id"],
+                                "status": "fail",
+                                "notes": "app did not start — see milestone report note",
+                                "type": tc["type"],
+                                "blocking": tc["blocking"],
+                            }
+                        )
                 else:
                     # 2c. Run the generated tests against the live app
                     pr = runner.run(
@@ -380,28 +414,48 @@ def run(
 
                     for tc in test_cases:
                         fn = f"test_{tc['test_id'].replace('-', '_')}"
-                        m  = re.search(rf"::{re.escape(fn)}\s+(PASSED|FAILED|ERROR|SKIPPED)", output)
+                        m = re.search(
+                            rf"::{re.escape(fn)}\s+(PASSED|FAILED|ERROR|SKIPPED)",
+                            output,
+                        )
                         if m:
                             status_raw = m.group(1)
-                            status = {"PASSED": "pass", "FAILED": "fail",
-                                      "ERROR": "fail", "SKIPPED": "skip"}[status_raw]
-                            note = "" if status != "fail" else _extract_failure_reason(output, fn)
+                            status = {
+                                "PASSED": "pass",
+                                "FAILED": "fail",
+                                "ERROR": "fail",
+                                "SKIPPED": "skip",
+                            }[status_raw]
+                            note = (
+                                ""
+                                if status != "fail"
+                                else _extract_failure_reason(output, fn)
+                            )
                         else:
                             status = "fail"
-                            note   = "generated test function not found in pytest output"
-                        results.append({
-                            "test_id": tc["test_id"], "status": status, "notes": note,
-                            "type": tc["type"], "blocking": tc["blocking"],
-                        })
+                            note = "generated test function not found in pytest output"
+                        results.append(
+                            {
+                                "test_id": tc["test_id"],
+                                "status": status,
+                                "notes": note,
+                                "type": tc["type"],
+                                "blocking": tc["blocking"],
+                            }
+                        )
 
         except (DockerNotAvailableError, ImageNotBuiltError) as e:
             runtime_note = str(e)
             for tc in test_cases:
-                results.append({
-                    "test_id": tc["test_id"], "status": "fail",
-                    "notes": f"docker error: {e}",
-                    "type": tc["type"], "blocking": tc["blocking"],
-                })
+                results.append(
+                    {
+                        "test_id": tc["test_id"],
+                        "status": "fail",
+                        "notes": f"docker error: {e}",
+                        "type": tc["type"],
+                        "blocking": tc["blocking"],
+                    }
+                )
         finally:
             try:
                 runner.stop_app(container_name)
@@ -426,13 +480,17 @@ def run(
     sec_failures, sec_escalations = _check_security(milestone_report)
 
     # 4. Combine
-    exec_failures    = [r["test_id"] for r in results if r["status"] == "fail"]
-    exec_escalations = [r["test_id"] for r in results
-                         if r["status"] == "fail" and r["type"] == "security"]
-    blocking_failed  = [r["test_id"] for r in results
-                         if r["status"] == "fail" and r["blocking"]]
+    exec_failures = [r["test_id"] for r in results if r["status"] == "fail"]
+    exec_escalations = [
+        r["test_id"]
+        for r in results
+        if r["status"] == "fail" and r["type"] == "security"
+    ]
+    blocking_failed = [
+        r["test_id"] for r in results if r["status"] == "fail" and r["blocking"]
+    ]
 
-    failures    = list(dict.fromkeys(exec_failures + sec_failures))
+    failures = list(dict.fromkeys(exec_failures + sec_failures))
     escalations = list(dict.fromkeys(exec_escalations + sec_escalations))
 
     blocking_passed = not blocking_failed and not sec_failures
@@ -445,7 +503,10 @@ def run(
         failures=failures,
         escalations=escalations,
         results=(
-            [{"test_id": r["test_id"], "status": r["status"], "notes": r["notes"]} for r in results]
+            [
+                {"test_id": r["test_id"], "status": r["status"], "notes": r["notes"]}
+                for r in results
+            ]
             + _security_check_results(sec_failures)
         ),
     )
@@ -461,7 +522,11 @@ def _security_check_results(failures: List[str]) -> List[Dict]:
         "SEC-GLOBAL-03": "Dependency audit clean",
     }
     return [
-        {"test_id": sid, "status": "fail" if sid in failures else "pass", "notes": label}
+        {
+            "test_id": sid,
+            "status": "fail" if sid in failures else "pass",
+            "notes": label,
+        }
         for sid, label in labels.items()
     ]
 
@@ -470,7 +535,8 @@ def _extract_failure_reason(pytest_output: str, fn_name: str) -> str:
     """Pull a short assertion message for a failed test from pytest -v --tb=short output."""
     m = re.search(
         rf"{re.escape(fn_name)}.*?\n(.*?AssertionError.*?)(?=\n_{{5,}}|\nFAILED|\Z)",
-        pytest_output, re.DOTALL,
+        pytest_output,
+        re.DOTALL,
     )
     if not m:
         return "see validation/ pytest output for details"
@@ -482,24 +548,28 @@ def _extract_failure_reason(pytest_output: str, fn_name: str) -> str:
 # Write result back into the milestone report
 # ---------------------------------------------------------------------------
 
-def _write_to_report(feature_id: str, result: GValidatorResult, root: Path, note: str) -> None:
+
+def _write_to_report(
+    feature_id: str, result: GValidatorResult, root: Path, note: str
+) -> None:
     from datetime import datetime, timezone
+
     report = root / "reports" / f"{feature_id}_milestone.md"
     if not report.exists():
         return
 
-    now  = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     text = report.read_text()
     safe_note = note[:200].replace('"', "'").replace("\n", " ")
 
     block = (
         f"```yaml\nvalidator_result:\n"
         f'  run_at: "{now}"\n'
-        f'  overall: {result["overall"]}\n'
-        f'  blocking_passed: {str(result["blocking_passed"]).lower()}\n'
+        f"  overall: {result['overall']}\n"
+        f"  blocking_passed: {str(result['blocking_passed']).lower()}\n"
         f"  human_gate: pending\n"
-        f'  failures: {json.dumps(result["failures"])}\n'
-        f'  escalations: {json.dumps(result["escalations"])}\n'
+        f"  failures: {json.dumps(result['failures'])}\n"
+        f"  escalations: {json.dumps(result['escalations'])}\n"
         f'  generated_test_file: "validation/{feature_id}_test.py"\n'
         f'  note: "{safe_note}"\n'
         f"```"
@@ -508,6 +578,10 @@ def _write_to_report(feature_id: str, result: GValidatorResult, root: Path, note
     new = re.sub(
         r"(## Validator result.*?```yaml\n).*?(```)",
         lambda m: m.group(1).rstrip() + "\n" + block[7:],
-        text, flags=re.DOTALL, count=1,
+        text,
+        flags=re.DOTALL,
+        count=1,
     )
-    report.write_text(new if new != text else text + f"\n\n## Validator result\n\n{block}\n")
+    report.write_text(
+        new if new != text else text + f"\n\n## Validator result\n\n{block}\n"
+    )
