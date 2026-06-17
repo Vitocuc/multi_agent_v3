@@ -332,7 +332,11 @@ def _make_summary(command: str, exit_code: int, output: str) -> str:
         r"(api.?key|token|password|secret|credential)\s*[:=]\s*\S+",
         re.IGNORECASE,
     )
-    lines = [line for line in clean.splitlines() if not secret_line.search(line)]
+    lines = [
+        safe_line
+        for safe_line in clean.splitlines()
+        if not secret_line.search(safe_line)
+    ]
     keywords = (
         "error",
         "fail",

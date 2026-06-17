@@ -59,6 +59,8 @@ def _load_env():
 
 _load_env()
 
+# These imports intentionally happen after _load_env() so downstream modules
+# can read environment configuration during import-time initialization.
 from schemas.pipeline_state import ProjectState, FeatureStatus  # noqa: E402
 from gates import state_store  # noqa: E402
 from memory import store as mem_store  # noqa: E402
