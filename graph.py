@@ -499,6 +499,11 @@ def merge_node(state: GraphState) -> GraphState:
 
         if r.success:
             print(c(GREEN, f"  ✓ PR merged for {fid}"))
+            try:
+                _generate_codebase_index(ROOT)
+                print(c(DIM, "  ✓ codebase_index.md updated"))
+            except Exception as idx_err:
+                print(c(YELLOW, f"  ⚠ codebase_index.md update failed: {idx_err}"))
             ps = state_store.load(ROOT)
             if fid in ps.features:
                 ps.add_log("info", f"PR merged for {fid}")
@@ -630,6 +635,90 @@ def build_graph(db_path: str = "checkpoints.db") -> StateGraph:
         checkpointer=checkpointer,
         interrupt_before=["human_gate"],
     )
+
+
+# ---------------------------------------------------------------------------
+# Codebase index
+# ---------------------------------------------------------------------------
+
+def _generate_codebase_index(root: Path) -> None:
+    """
+    Write codebase_index.md after each feature merge.
+    Workers read this at the start of their session to discover what's already built.
+    """
+    import re as _re
+    from datetime import date
+
+    _SKIP_DIRS = {
+        ".git", "node_modules", "__pycache__", ".pytest_cache",
+        "venv", ".venv", "dist", "build", ".mypy_cache", ".tox", "reports",
+    }
+    _SRC_EXTS = {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".rb"}
+
+    lines: list[str] = [
+        "# Codebase Index\n\n",
+        f"_Auto-generated after the last feature merge — {date.today()}_\n\n",
+        "Workers: read this first to understand what is already built before writing new code.\n\n",
+        "---\n\n",
+        "## Directory Structure\n\n```\n",
+    ]
+
+    def _walk_tree(path: Path, prefix: str = "", depth: int = 0) -> None:
+        if depth > 4:
+            return
+        try:
+            entries = sorted(path.iterdir(), key=lambda p: (p.is_file(), p.name))
+        except PermissionError:
+            return
+        for entry in entries:
+            if entry.name in _SKIP_DIRS or entry.name == "codebase_index.md":
+                continue
+            lines.append(f"{prefix}{entry.name}{'/' if entry.is_dir() else ''}\n")
+            if entry.is_dir():
+                _walk_tree(entry, prefix + "  ", depth + 1)
+
+    _walk_tree(root)
+    lines.append("```\n\n")
+
+    lines.append("## Module Definitions\n\n")
+
+    _PY_DEF = _re.compile(r"^(class|def|async def)\s+(\w+)", _re.MULTILINE)
+    _JS_DEF = _re.compile(
+        r"^(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s+(\w+)|class\s+(\w+)|"
+        r"(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\(?)",
+        _re.MULTILINE,
+    )
+
+    def _extract_defs(filepath: Path) -> list[str]:
+        try:
+            text = filepath.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return []
+        ext = filepath.suffix
+        defs: list[str] = []
+        if ext == ".py":
+            for m in _PY_DEF.finditer(text):
+                defs.append(f"  {m.group(1)} {m.group(2)}")
+        elif ext in (".js", ".ts", ".jsx", ".tsx"):
+            for m in _JS_DEF.finditer(text):
+                name = m.group(1) or m.group(2) or m.group(3)
+                if name:
+                    defs.append(f"  {m.group(0).split('=')[0].strip()}")
+        return defs[:25]
+
+    for filepath in sorted(root.rglob("*")):
+        if not filepath.is_file() or filepath.suffix not in _SRC_EXTS:
+            continue
+        if any(skip in filepath.parts for skip in _SKIP_DIRS):
+            continue
+        rel = filepath.relative_to(root)
+        defs = _extract_defs(filepath)
+        if defs:
+            lines.append(f"### `{rel}`\n")
+            lines.append("\n".join(defs))
+            lines.append("\n\n")
+
+    (root / "codebase_index.md").write_text("".join(lines))
 
 
 # ---------------------------------------------------------------------------

@@ -30,16 +30,20 @@ You do NOT handle git, branches, commits, or pull requests.
 The pipeline handles all version control — focus entirely on implementation.
 
 Rules:
-1. file_read doc1_security_contract.md before writing any code.
-2. file_read doc4_milestone_report.md — this is the template you will fill.
-3. Implement ONLY the feature described in your context. No scope creep.
-4. Use test_runner to run: install → lint → test → audit after implementation.
-5. Write the completed milestone report to reports/{feature_id}_milestone.md.
-6. Stop when the milestone report is written. Do not run git. Do not open PRs.
+1. file_read codebase_index.md first (if it exists) — it maps everything built so far.
+2. file_read doc1_security_contract.md before writing any code.
+3. file_read doc4_milestone_report.md — this is the template you will fill.
+4. Use list_files and grep to explore areas you must integrate with before writing.
+5. Implement ONLY the feature described in your context. No scope creep.
+6. Use test_runner to run: install → lint → test → audit after implementation.
+7. Write the completed milestone report to reports/{feature_id}_milestone.md.
+8. Stop when the milestone report is written. Do not run git. Do not open PRs.
 
-You have three tools:
+You have five tools:
 - file_read:    read any file in the project
 - file_write:   write any file in the project (source code, milestone report)
+- list_files:   list directory contents to discover what already exists
+- grep:         search for patterns across files to find existing code
 - test_runner:  run a named test phase inside Docker (install/lint/test/audit)
 
 Security rules (always apply):
@@ -74,6 +78,50 @@ _TOOLS = [
                 "content": {"type": "string", "description": "Full file content."},
             },
             "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "list_files",
+        "description": (
+            "List files and directories in the project. "
+            "Use this to discover the existing codebase structure before implementing. "
+            "Hidden system directories (.git, node_modules, __pycache__) are excluded."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "directory": {
+                    "type": "string",
+                    "description": "Directory to list, relative to project root. Defaults to '.' (project root).",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "grep",
+        "description": (
+            "Search for a pattern across project files. "
+            "Returns matching lines with file:line references. "
+            "Use this to find existing functions, classes, endpoints, or imports before writing new code."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "The search pattern (substring or regex).",
+                },
+                "glob": {
+                    "type": "string",
+                    "description": (
+                        "File glob pattern to limit search scope. "
+                        "E.g. '**/*.py', '**/*.ts', 'src/**/*.js'. "
+                        "Defaults to all text files."
+                    ),
+                },
+            },
+            "required": ["pattern"],
         },
     },
     {
@@ -121,7 +169,7 @@ def _load_standing_rules(root: Path) -> str:
     if rules_dir.exists():
         for f in sorted(rules_dir.glob("*.md")):
             content = f.read_text().strip()
-            # Strip paths: frontmatter — Claude Code directive, not API content
+            # Strip frontmatter — Claude Code directive, not API content
             content = re.sub(r"^---\n.*?\n---\n?", "", content, flags=re.DOTALL).strip()
             if content:
                 parts.append(content)
@@ -176,21 +224,25 @@ def run(context: FeatureContext, root: Path = ROOT) -> WorkerResult:
         "## Filtered project memory\n"
         f"```json\n{mem_str}\n```\n\n"
         "## Steps\n"
+        "0. file_read codebase_index.md — orient yourself (skip gracefully if not found)\n"
         "1. file_read doc1_security_contract.md\n"
         "2. file_read doc4_milestone_report.md\n"
-        "3. Implement the feature — write source files using file_write\n"
-        "4. test_runner phase=install\n"
-        "5. test_runner phase=lint\n"
-        "6. test_runner phase=test\n"
-        "7. test_runner phase=audit\n"
-        f"8. file_write reports/{fid}_milestone.md — fill every field\n\n"
+        "3. Use list_files and grep to explore code you must integrate with\n"
+        "4. Implement the feature — write source files using file_write\n"
+        "5. test_runner phase=install\n"
+        "6. test_runner phase=lint\n"
+        "7. test_runner phase=test\n"
+        "8. test_runner phase=audit\n"
+        f"9. file_write reports/{fid}_milestone.md — fill every field\n\n"
         "Do NOT run git commands. Do NOT open PRs. The pipeline handles that.\n"
-        "Start with step 1."
+        "Start with step 0."
     )
 
     # Build system prompt: base rules + CLAUDE.md + rules files
+    # Sent as a cached content block — identical across all 40 turns so only
+    # billed at full token cost once per session (subsequent turns hit cache).
     standing_rules = _load_standing_rules(root)
-    system = _WORKER_SYSTEM.format(feature_id=fid)
+    system = _WORKER_SYSTEM
     if standing_rules:
         system += "\n\n---\n\n" + standing_rules
 
@@ -201,7 +253,8 @@ def run(context: FeatureContext, root: Path = ROOT) -> WorkerResult:
         payload = json.dumps({
             "model":      model,
             "max_tokens": 16384,   # generous — complex features need room
-            "system":     system,
+            "system": [{"type": "text", "text": system,
+                        "cache_control": {"type": "ephemeral"}}],
             "tools":      _TOOLS,
             "messages":   messages,
         }).encode()
@@ -304,6 +357,80 @@ def _execute_tool(name: str, inp: dict, root: Path, runner: DockerRunner) -> str
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(inp["content"])
             return f"Written: {inp['path']} ({len(inp['content'])} chars)"
+
+        elif name == "list_files":
+            directory = inp.get("directory", ".")
+            target = root / directory
+            if not target.exists():
+                return f"Error: directory '{directory}' does not exist"
+            if not target.is_dir():
+                return f"Error: '{directory}' is not a directory"
+
+            _SKIP_DIRS = {
+                ".git", "node_modules", "__pycache__", ".pytest_cache",
+                "venv", ".venv", "dist", "build", ".mypy_cache", ".tox",
+            }
+            lines: list[str] = []
+
+            def _walk(path: Path, prefix: str = "", depth: int = 0) -> None:
+                if depth > 5:
+                    return
+                try:
+                    entries = sorted(path.iterdir(), key=lambda p: (p.is_file(), p.name))
+                except PermissionError:
+                    return
+                for entry in entries:
+                    if entry.name in _SKIP_DIRS:
+                        continue
+                    lines.append(f"{prefix}{entry.name}{'/' if entry.is_dir() else ''}")
+                    if entry.is_dir():
+                        _walk(entry, prefix + "  ", depth + 1)
+
+            _walk(target)
+            result_str = "\n".join(lines)
+            if len(result_str) > 4000:
+                result_str = result_str[:4000] + "\n...[truncated]..."
+            return result_str or "(empty directory)"
+
+        elif name == "grep":
+            import re as _re
+            pattern = inp.get("pattern", "")
+            glob_pat = inp.get("glob", "**/*")
+
+            _SKIP_DIRS = {
+                ".git", "node_modules", "__pycache__", ".pytest_cache",
+                "venv", ".venv", "dist", "build", ".mypy_cache",
+            }
+
+            try:
+                compiled = _re.compile(pattern, _re.IGNORECASE)
+            except _re.error:
+                compiled = _re.compile(_re.escape(pattern), _re.IGNORECASE)
+
+            matches: list[str] = []
+            for filepath in sorted(root.glob(glob_pat)):
+                if not filepath.is_file():
+                    continue
+                if any(skip in filepath.parts for skip in _SKIP_DIRS):
+                    continue
+                try:
+                    text = filepath.read_text(encoding="utf-8", errors="ignore")
+                except Exception:
+                    continue
+                for i, line in enumerate(text.splitlines(), 1):
+                    if compiled.search(line):
+                        rel = filepath.relative_to(root)
+                        matches.append(f"{rel}:{i}: {line.rstrip()}")
+                if len(matches) >= 150:
+                    matches.append("...[truncated — too many matches, narrow your pattern]...")
+                    break
+
+            if not matches:
+                return f"No matches for '{pattern}'"
+            result_str = "\n".join(matches)
+            if len(result_str) > 4000:
+                result_str = result_str[:4000] + "\n...[truncated]..."
+            return result_str
 
         elif name == "test_runner":
             phase   = inp.get("phase", "")
