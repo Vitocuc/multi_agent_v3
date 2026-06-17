@@ -17,7 +17,7 @@
 
 name: CI — Security Gates
 
-on:
+"on":
   pull_request:
     branches:
       - main
@@ -81,9 +81,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run pip-audit (fail on HIGH or CRITICAL CVE)
-        # pip-audit exits non-zero if any vulnerability is found.
-        # The --severity flag ensures HIGH and CRITICAL trigger failure.
-        run: pip-audit --requirement requirements.txt --severity HIGH
+        run: pip-audit -r requirements.txt
 
   # ─────────────────────────────────────────────────────────────
   # Gate 3: SAST — Bandit
@@ -104,17 +102,14 @@ jobs:
       - name: Install Bandit
         run: pip install bandit
 
-      - name: Run Bandit (fail on HIGH severity)
-        # -l HIGH ensures only HIGH or CRITICAL findings fail the build.
-        # -r scans recursively. Excludes test directories and third-party code.
+      - name: Run Bandit (fail on HIGH severity findings)
         run: |
           bandit -r . \
-            -l \
-            --severity-level HIGH \
+            --severity-level high \
             --exclude ./.venv,./venv,./.git,./infra,./tests,./validation \
             -f json \
             -o bandit-report.json || \
-          (cat bandit-report.json && exit 1)
+          (echo "Bandit found HIGH/CRITICAL findings — PR blocked" && cat bandit-report.json && exit 1)
 
       - name: Upload Bandit report
         if: always()
@@ -122,13 +117,12 @@ jobs:
         with:
           name: bandit-report
           path: bandit-report.json
-          retention-days: 30
 
   # ─────────────────────────────────────────────────────────────
   # Gate 4: Secret scanning — Gitleaks
   # ─────────────────────────────────────────────────────────────
   gitleaks:
-    name: Gitleaks — Secret Scanning
+    name: Gitleaks — Secret Scan
     runs-on: ubuntu-latest
     needs: lint
     steps:
@@ -144,12 +138,15 @@ jobs:
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
   # ─────────────────────────────────────────────────────────────
-  # Gate 5: Unit/integration tests (pytest)
+  # Gate 5: Unit and integration tests
   # ─────────────────────────────────────────────────────────────
   test:
-    name: pytest — Test Suite
+    name: pytest — Unit / Integration Tests
     runs-on: ubuntu-latest
-    needs: [pip-audit, bandit, gitleaks]
+    needs:
+      - pip-audit
+      - bandit
+      - gitleaks
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -160,21 +157,17 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt pytest pytest-cov
+        run: pip install -r requirements.txt
 
-      - name: Run tests
-        run: pytest tests/ -v --tb=short --cov=. --cov-report=xml
-        env:
-          # No real secrets injected here — tests use in-memory/mock backends
-          ENVIRONMENT: test
+      - name: Run pytest
+        run: pytest tests/ -v --tb=short
 
-      - name: Upload coverage report
+      - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-report
-          path: coverage.xml
-          retention-days: 30
+          name: test-results
+          path: .pytest_cache/
 
   # ─────────────────────────────────────────────────────────────
   # Gate 6: Docker build (only after all security gates pass)
@@ -182,45 +175,36 @@ jobs:
   docker-build:
     name: Docker Build
     runs-on: ubuntu-latest
-    needs: [test]
+    needs: test
     outputs:
-      image_tag: ${{ steps.meta.outputs.sha_tag }}
+      image_tag: ${{ github.sha }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set image tag (commit SHA)
-        id: meta
-        run: echo "sha_tag=${{ github.sha }}" >> "$GITHUB_OUTPUT"
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build Docker image (no push yet)
+      - name: Build Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile
           push: false
-          tags: |
-            protegopay/app:${{ github.sha }}
-            protegopay/app:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: protegopay/app:${{ github.sha }}
           outputs: type=docker,dest=/tmp/image.tar
 
-      - name: Upload image artifact
+      - name: Upload Docker image artifact
         uses: actions/upload-artifact@v4
         with:
           name: docker-image
           path: /tmp/image.tar
-          retention-days: 1
 
   # ─────────────────────────────────────────────────────────────
   # Gate 7: Container vulnerability scan — Trivy
   # ─────────────────────────────────────────────────────────────
   trivy:
-    name: Trivy — Container Image Scan
+    name: Trivy — Container Vulnerability Scan
     runs-on: ubuntu-latest
     needs: docker-build
     steps:
@@ -236,25 +220,20 @@ jobs:
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: "protegopay/app:${{ github.sha }}"
-          format: "table"
-          exit-code: "1"
-          ignore-unfixed: false
-          vuln-type: "os,library"
-          # Fail only on CRITICAL vulnerabilities per acceptance criteria
-          severity: "CRITICAL"
-          output: trivy-report.txt
+          image-ref: protegopay/app:${{ github.sha }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL
+          exit-code: 1
 
-      - name: Upload Trivy report
+      - name: Upload Trivy scan results to GitHub Security tab
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: github/codeql-action/upload-sarif@v3
         with:
-          name: trivy-report
-          path: trivy-report.txt
-          retention-days: 30
+          sarif_file: trivy-results.sarif
 
   # ─────────────────────────────────────────────────────────────
-  # Gate 8: Push to ECR (staging target only, after Trivy passes)
+  # Gate 8: Push to ECR (staging PRs and develop pushes only)
   # ─────────────────────────────────────────────────────────────
   ecr-push-staging:
     name: Push to ECR (staging)

@@ -1,0 +1,28 @@
+{
+  "_meta": {
+    "schema_version": "1.0"
+  },
+  "architecture_decisions": [],
+  "failed_approaches": [
+    {
+      "entry_id": "FA-F-01-001-ISS-02",
+      "feature_id": "F-01-001",
+      "timestamp": "2026-06-17T09:29:25.830699+00:00",
+      "what_was_tried": "ruff linter not available in the Docker test container; lint phase used python3 -m py_compile as a syntax check fallback.",
+      "why_it_failed": "Python syntax validated via py_compile. Ruff or flake8 should be added to Dockerfile.test or requirements.txt for proper linting in future features.",
+      "do_not_retry": false,
+      "alternative_used": "Python syntax validated via py_compile. Ruff or flake8 should be added to Dockerfile.test or requirements.txt for proper linting in future features."
+    },
+    {
+      "entry_id": "FA-F-01-001-ISS-03",
+      "feature_id": "F-01-001",
+      "timestamp": "2026-06-17T09:29:25.830699+00:00",
+      "what_was_tried": "terraform CLI not available in test container so terraform validate and terraform plan could not be run as specified in worker instructions step 9.",
+      "why_it_failed": "Structural validation covered by 82 pytest tests that parse .tf files directly. A CI workflow (infra/.github/workflows or similar) should add terraform validate as a separate step when AWS credentials are available.",
+      "do_not_retry": false,
+      "alternative_used": "Structural validation covered by 82 pytest tests that parse .tf files directly. A CI workflow (infra/.github/workflows or similar) should add terraform validate as a separate step when AWS credentials are available."
+    }
+  ],
+  "discovered_constraints": [],
+  "open_risks": []
+}

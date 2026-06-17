@@ -251,6 +251,7 @@ def pr_status(feature_id: str, root: Path) -> Optional[PRStatus]:
             "gh",
             "pr",
             "list",
+            "--state",  "all",   # include merged/closed, not just open
             "--search",
             f"[{feature_id}] in:title",
             "--json",

@@ -258,7 +258,7 @@ def run(context: FeatureContext, root: Path = ROOT) -> WorkerResult:
     )
 
     # Build system prompt: base rules + CLAUDE.md + rules files
-    # Sent as a cached content block — identical across all 40 turns so only
+    # Sent as a cached content block — identical across all 80 turns so only
     # billed at full token cost once per session (subsequent turns hit cache).
     standing_rules = _load_standing_rules(root)
     system = _WORKER_SYSTEM
@@ -267,8 +267,8 @@ def run(context: FeatureContext, root: Path = ROOT) -> WorkerResult:
 
     messages = [{"role": "user", "content": initial_prompt}]
 
-    # Agentic loop — 40 turns max
-    for turn in range(40):
+    # Agentic loop — 80 turns max
+    for turn in range(80):
         payload = json.dumps(
             {
                 "model": model,
@@ -381,7 +381,7 @@ def run(context: FeatureContext, root: Path = ROOT) -> WorkerResult:
         feature_id=fid,
         success=False,
         milestone_report="",
-        error="Worker exceeded 40 turns without completing",
+        error="Worker exceeded 80 turns without completing",
     )
 
 

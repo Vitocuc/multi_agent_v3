@@ -150,7 +150,7 @@ validator_result:
   run_at: "2026-06-17T09:29:25.827323+00:00"
   overall: pass
   blocking_passed: true
-  human_gate: pending
+  human_gate: approved
   failures: []
   escalations: []
   generated_test_file: "validation/F-01-001_test.py"

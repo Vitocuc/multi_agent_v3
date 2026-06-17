@@ -1,0 +1,19 @@
+[bandit]
+# Bandit SAST configuration — ProtegoPay
+# Feature F-01-002: CI/CD Pipeline with Security Gates
+#
+# Fail on HIGH severity findings. MEDIUM findings produce warnings but do
+# not block CI. LOW findings are informational only.
+#
+# Excluded paths:
+#   tests/       — test code uses assert and may use test credentials
+#   validation/  — generated validator code, not application code
+#   infra/       — Terraform HCL not parsed by Bandit
+#   .venv/       — third-party code, not ours
+#
+# See: https://bandit.readthedocs.io/en/latest/config.html
+
+[bandit]
+exclude = tests,validation,infra,.venv,venv,.git
+severity = HIGH
+confidence = MEDIUM

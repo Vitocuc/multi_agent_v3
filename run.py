@@ -7,6 +7,8 @@ Commands:
   start                         Begin a new project
   resume [--decision approve|reject] [--note "..."]
                                 Continue after a human gate
+  recover                       Rebuild a fresh checkpoint from project_state.json
+                                (use after a bloated/corrupt checkpoints.db)
   gh-check <feature_id>         Poll GitHub PR — detect approval/merge, flip human_gate
   retry <feature_id> [--force]  Requeue a FAILED feature, feeding the worker the
                                  previous validator failure so it doesn't repeat it
@@ -18,6 +20,7 @@ Usage:
   python run.py start
   python run.py resume --decision approve
   python run.py resume --decision reject --note "fix the auth section"
+  python run.py recover
   python run.py gh-check F-01-001
   python run.py retry F-01-001
   python run.py status
@@ -179,6 +182,31 @@ def cmd_resume(decision: str = "", note: str = ""):
     gate = current.get("gate_type")
 
     if not gate and not decision:
+        # If the pipeline reached "complete" but there are still pending features,
+        # reset to feature_selection so the user can pick the next batch.
+        if current.get("phase") == "complete":
+            ps = state_store.load(ROOT)
+            pending = [fid for fid, fr in ps.features.items()
+                       if fr.status == FeatureStatus.PENDING]
+            failed  = [fid for fid, fr in ps.features.items()
+                       if fr.status == FeatureStatus.FAILED]
+            if pending or failed:
+                print(c(DIM, "  Previous batch complete — returning to feature selection...\n"))
+                _stream(g, {
+                    **current,
+                    "phase":             "feature_selection",
+                    "selected_features": [],
+                    "feature_contexts":  {},
+                    "worker_results":    {},
+                    "git_results":       {},
+                    "validator_results": {},
+                    "merge_results":     {},
+                    "gate_type":         None,
+                }, cfg)
+                return
+            print(c(GREEN, "  All features complete — nothing left to do.\n"))
+            return
+
         # No gate pending — just continue
         print(c(DIM, "  No gate pending — continuing pipeline...\n"))
         _stream(g, None, cfg)
@@ -247,14 +275,23 @@ def cmd_resume(decision: str = "", note: str = ""):
     _stream(g, updated, cfg)
 
 
+_RECURSION_LIMIT = 200   # sane ceiling; a healthy run never exceeds ~20 steps
+
 def _stream(g, update, cfg):
+    stream_cfg = {**cfg, "recursion_limit": _RECURSION_LIMIT}
     try:
         if update:
             g.update_state(cfg, update)
-        for _ in g.stream(None, config=cfg):
+        for _ in g.stream(None, config=stream_cfg):
             pass
     except KeyboardInterrupt:
         print(c(YELLOW, "\n\nInterrupted. Run 'python run.py resume' to continue."))
+    except Exception as e:
+        if "recursion" in str(e).lower():
+            print(c(RED, f"\n  ✗ Routing loop detected (>{_RECURSION_LIMIT} steps)."))
+            print(c(YELLOW, "  Run 'python run.py recover' to rebuild a clean checkpoint.\n"))
+        else:
+            raise
     _maybe_print_gate(g, cfg)
 
 
@@ -459,8 +496,9 @@ def cmd_gh_check(feature_id: str) -> None:
             "gh",
             "pr",
             "list",
+            "--state", "all",   # include merged/closed PRs, not just open ones
             "--search",
-            f"[{fid}]",
+            f"[{fid}] in:title",
             "--json",
             "number,title,state,reviewDecision,mergedAt,headRefName",
         ],
@@ -778,6 +816,79 @@ def _build_retry_note(fid: str, vr: dict, last_error: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# recover — rebuild checkpoint from project_state.json
+# ---------------------------------------------------------------------------
+
+
+def cmd_recover():
+    """
+    Delete a bloated or corrupt checkpoints.db and seed a fresh checkpoint
+    from the current project_state.json, resuming at feature_selection.
+
+    Use this after a recursion loop fills checkpoints.db to several GB.
+    project_state.json is the source of truth — feature statuses are preserved.
+    """
+    db_path = ROOT / "checkpoints.db"
+    state_path = ROOT / "project_state.json"
+
+    if not state_path.exists():
+        print(c(RED, "\n  ✗ project_state.json not found — nothing to recover from.\n"))
+        sys.exit(1)
+
+    ps = state_store.load(ROOT)
+
+    # Show what we're recovering
+    passed  = [fid for fid, fr in ps.features.items() if fr.status == FeatureStatus.PASSED]
+    pending = [fid for fid, fr in ps.features.items() if fr.status == FeatureStatus.PENDING]
+    failed  = [fid for fid, fr in ps.features.items() if fr.status == FeatureStatus.FAILED]
+
+    print(c(BOLD, "\n── Recovery ──\n"))
+    print(c(DIM,   f"  Passed  ({len(passed)}): {passed}"))
+    print(c(YELLOW, f"  Failed  ({len(failed)}): {failed}"))
+    print(c(DIM,   f"  Pending ({len(pending)}): {pending[:6]}{'...' if len(pending) > 6 else ''}"))
+    print()
+
+    # Delete the bloated DB
+    if db_path.exists():
+        size_mb = db_path.stat().st_size / 1024 / 1024
+        print(c(DIM, f"  Deleting checkpoints.db ({size_mb:.0f} MB)..."))
+        db_path.unlink()
+        print(c(GREEN, "  ✓ Deleted"))
+
+    # Seed a fresh checkpoint at feature_selection
+    from graph import build_graph
+    g   = build_graph(str(db_path))
+    cfg = {"configurable": {"thread_id": THREAD_ID}}
+
+    fresh_state = {
+        "project_id":            ps.project_id,
+        "project_name":          ps.project_name,
+        "phase":                 "feature_selection",
+        "clarification_history": [],
+        "clarification_round":   1,
+        "plan_approved":         True,
+        "contracts_approved":    True,
+        "selected_features":     [],
+        "feature_contexts":      {},
+        "worker_results":        {},
+        "git_results":           {},
+        "validator_results":     {},
+        "merge_results":         {},
+        "gate_type":             None,
+        "gate_message":          None,
+        "gate_feature":          None,
+        "gate_note":             None,
+        "last_error":            "",
+        "consecutive_errors":    0,
+        "cto_model":             ps.cto_model,
+        "validator_model":       ps.validator_model,
+    }
+
+    print(c(DIM, "  Seeding fresh checkpoint at feature_selection..."))
+    _stream(g, fresh_state, cfg)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -813,6 +924,8 @@ def main():
 
     if cmd == "start":
         cmd_start()
+    elif cmd == "recover":
+        cmd_recover()
     elif cmd == "resume":
         cmd_resume(decision=decision, note=note)
     elif cmd == "status":
@@ -846,7 +959,7 @@ def main():
         print(
             c(
                 DIM,
-                "  Valid: start, resume, status, memory, gh-check, retry, docker-build\n",
+                "  Valid: start, resume, recover, status, memory, gh-check, retry, docker-build\n",
             )
         )
         sys.exit(1)

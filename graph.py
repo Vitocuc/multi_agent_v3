@@ -21,6 +21,7 @@ All version control is handled by git_node and merge_node using git_ops.py.
 from __future__ import annotations
 from pathlib import Path
 
+import sqlite3 as _sqlite3
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.sqlite import SqliteSaver
 
@@ -631,11 +632,17 @@ def merge_node(state: GraphState) -> GraphState:
                 print(c(YELLOW, f"  ⚠ codebase_index.md update failed: {idx_err}"))
             ps = state_store.load(ROOT)
             if fid in ps.features:
-                ps.add_log("info", f"PR merged for {fid}")
+                ps.features[fid].status = FeatureStatus.PASSED
+                ps.add_log("info", f"PR merged for {fid} — feature complete")
                 state_store.save(ps, ROOT)
         else:
             print(c(YELLOW, f"  ⚠ Auto-merge failed: {r.output[:120]}"))
             print(c(DIM, "  Merge manually on GitHub or re-run after checks pass."))
+            ps = state_store.load(ROOT)
+            if fid in ps.features:
+                ps.features[fid].status = FeatureStatus.FAILED
+                ps.features[fid].last_error = f"merge failed: {r.stderr[:100]}"
+                state_store.save(ps, ROOT)
 
         merge_results[fid] = {"success": r.success, "error": r.stderr[:200]}
         return {**state, "merge_results": merge_results}
@@ -734,6 +741,47 @@ def route_after_merge(state: GraphState) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Pruning checkpointer — keeps only the last N checkpoints per thread
+# ---------------------------------------------------------------------------
+
+class _PruningCheckpointer(SqliteSaver):
+    """
+    SqliteSaver wrapper that prunes old checkpoint rows after every write.
+
+    LangGraph's default SqliteSaver keeps every state transition forever.
+    A routing bug that loops 10,000 times produces a 5 GB database.
+    This subclass deletes all but the `keep` most recent rows for the
+    current thread_id after each put(), capping the DB at a small constant size.
+    """
+
+    def __init__(self, conn: _sqlite3.Connection, keep: int = 5):
+        super().__init__(conn)
+        self._keep = keep
+
+    def put(self, config, checkpoint, metadata, new_versions):
+        result = super().put(config, checkpoint, metadata, new_versions)
+        try:
+            thread_id = config["configurable"]["thread_id"]
+            self.conn.execute(
+                """
+                DELETE FROM checkpoints
+                WHERE thread_id = ?
+                  AND thread_ts NOT IN (
+                      SELECT thread_ts FROM checkpoints
+                      WHERE thread_id = ?
+                      ORDER BY thread_ts DESC
+                      LIMIT ?
+                  )
+                """,
+                (thread_id, thread_id, self._keep),
+            )
+            self.conn.commit()
+        except Exception:
+            pass  # pruning is best-effort; never break a write
+        return result
+
+
+# ---------------------------------------------------------------------------
 # Graph builder
 # ---------------------------------------------------------------------------
 
@@ -775,10 +823,8 @@ def build_graph(db_path: str = "checkpoints.db") -> StateGraph:
         "merge", route_after_merge, {"cto_orchestrator": "cto_orchestrator"}
     )
 
-    import sqlite3
-
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-    checkpointer = SqliteSaver(conn)
+    conn = _sqlite3.connect(db_path, check_same_thread=False)
+    checkpointer = _PruningCheckpointer(conn, keep=5)
     return builder.compile(
         checkpointer=checkpointer,
         interrupt_before=["human_gate"],

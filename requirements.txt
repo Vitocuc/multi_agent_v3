@@ -5,3 +5,11 @@ langchain-google-genai>=1.0
 anthropic>=0.30
 google-generativeai>=0.7
 python-dotenv>=1.0
+
+# Security scanning tools — used in CI gates (F-01-002) and local dev
+# pip-audit: dependency CVE scanning (Gate 2)
+# bandit: Python SAST (Gate 3)
+# pyyaml: required by test_cicd_pipeline.py to validate YAML workflow files
+pip-audit>=2.7
+bandit>=1.7
+pyyaml>=6.0

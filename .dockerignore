@@ -1,0 +1,78 @@
+# .dockerignore — exclude files from Docker build context
+# Feature F-01-002: CI/CD Pipeline with Security Gates
+#
+# These files are NOT copied into the production image.
+# Reduces image size and prevents accidental secret exposure.
+
+# Secrets — never in image
+.env
+.env.*
+!.env.example
+
+# Development and test files
+tests/
+validation/
+*.test.py
+Dockerfile.test
+
+# CI/CD configuration — not needed at runtime
+.github/
+.gitignore
+.gitleaks.toml
+bandit-report.json
+
+# Terraform — infra-only, not application code
+infra/
+
+# Python caches and build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Node (if any frontend assets are built separately)
+node_modules/
+
+# Pipeline internals — not application code
+agents/
+llm/
+gates/
+memory/
+schemas/
+docker/
+checkpoints.db*
+project_state.json
+memory.json
+reports/
+contracts/
+docs/
+DOCS.md
+CLAUDE.md
+*.svg
+run.py
+graph.py
+pipeline.py
+git_ops.py
+feature_menu.py

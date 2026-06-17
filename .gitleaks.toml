@@ -1,0 +1,45 @@
+# Gitleaks configuration — ProtegoPay
+# Feature F-01-002: CI/CD Pipeline with Security Gates
+#
+# Scans every commit diff for hardcoded secrets.
+# Based on the default ruleset with project-specific allowlists.
+#
+# See: https://github.com/gitleaks/gitleaks#configuration
+
+title = "ProtegoPay gitleaks config"
+
+[extend]
+# Extend the official gitleaks rules rather than replacing them
+useDefault = true
+
+[[allowlists]]
+description = "Ignore placeholder values in example env files"
+paths = [
+  '''.env.example''',
+  '''infra/.env.example''',
+  '''env.example''',
+]
+
+[[allowlists]]
+description = "Ignore test fixture files that may contain fake credentials"
+paths = [
+  '''tests/''',
+  '''validation/''',
+]
+
+[[allowlists]]
+description = "Ignore Terraform variable files — values are non-secret sizing config"
+paths = [
+  '''infra/terraform/env/dev.tfvars''',
+  '''infra/terraform/env/staging.tfvars''',
+  '''infra/terraform/env/prod.tfvars''',
+]
+
+[[allowlists]]
+description = "Ignore documentation files referencing placeholder secrets"
+paths = [
+  '''DOCS.md''',
+  '''README.md''',
+  '''contracts/''',
+  '''reports/''',
+]

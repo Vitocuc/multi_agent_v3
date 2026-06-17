@@ -44,12 +44,12 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: pip-audit — dependency CVE scan (HIGH/CRITICAL fail)
-        run: pip-audit --requirement requirements.txt --severity HIGH
+        run: pip-audit -r requirements.txt
 
       - name: Bandit — SAST Python (HIGH severity fail)
         run: |
           bandit -r . \
-            --severity-level HIGH \
+            --severity-level high \
             --exclude ./.venv,./venv,./.git,./infra,./tests,./validation \
             -f json \
             -o bandit-report.json || \
