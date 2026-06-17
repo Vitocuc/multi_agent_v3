@@ -5,73 +5,74 @@ LangGraph graph state — the TypedDict that flows between every node.
 This is ephemeral per graph run.
 Persistent execution state lives in project_state.json (schemas/pipeline_state.py).
 """
+
 from __future__ import annotations
-from typing import TypedDict, Optional, List, Dict, Any
+from typing import TypedDict, Optional, List, Dict
 
 
 class FeatureContext(TypedDict):
-    feature_id:   str
-    title:        str
+    feature_id: str
+    title: str
     milestone_id: str
-    depends_on:   List[str]
-    priority:     str
-    block_text:   str          # raw feature block from doc2
-    memory:       Dict         # filtered memory.json for this feature
-    branch_name:  str
-    retry_note:   str          # "" on first attempt; populated by `retry` with
-                                # the previous attempt's validator failure details
+    depends_on: List[str]
+    priority: str
+    block_text: str  # raw feature block from doc2
+    memory: Dict  # filtered memory.json for this feature
+    branch_name: str
+    retry_note: str  # "" on first attempt; populated by `retry` with
+    # the previous attempt's validator failure details
 
 
 class WorkerResult(TypedDict):
-    feature_id:        str
-    success:           bool
-    milestone_report:  str     # raw text of the filed doc4
-    error:             str
+    feature_id: str
+    success: bool
+    milestone_report: str  # raw text of the filed doc4
+    error: str
 
 
 class ValidatorResult(TypedDict):
-    feature_id:      str
-    overall:         str       # pass | fail
+    feature_id: str
+    overall: str  # pass | fail
     blocking_passed: bool
-    failures:        List[str]
-    escalations:     List[str]
-    results:         List[Dict]
+    failures: List[str]
+    escalations: List[str]
+    results: List[Dict]
 
 
 class GraphState(TypedDict):
     # Project identity
-    project_id:   str
+    project_id: str
     project_name: str
 
     # Phase tracking
-    phase:        str          # clarification | plan_review | contract_gen |
-                               # contract_review | feature_selection |
-                               # implementation | complete | failed
+    phase: str  # clarification | plan_review | contract_gen |
+    # contract_review | feature_selection |
+    # implementation | complete | failed
 
     # CTO clarification
-    clarification_history: List[Dict]   # [{role, content}]
-    clarification_round:   int
-    plan_approved:         bool
-    contracts_approved:    bool
+    clarification_history: List[Dict]  # [{role, content}]
+    clarification_round: int
+    plan_approved: bool
+    contracts_approved: bool
 
     # Feature execution
-    selected_features:  List[str]              # user-selected feature_ids
-    feature_contexts:   Dict[str, FeatureContext]
-    worker_results:     Dict[str, WorkerResult]
-    git_results:        Dict[str, Dict]        # pipeline git ops: {success, error, pr_url}
-    validator_results:  Dict[str, ValidatorResult]
-    merge_results:      Dict[str, Dict]        # pipeline merge ops: {success, error}
+    selected_features: List[str]  # user-selected feature_ids
+    feature_contexts: Dict[str, FeatureContext]
+    worker_results: Dict[str, WorkerResult]
+    git_results: Dict[str, Dict]  # pipeline git ops: {success, error, pr_url}
+    validator_results: Dict[str, ValidatorResult]
+    merge_results: Dict[str, Dict]  # pipeline merge ops: {success, error}
 
     # Gate management
-    gate_type:    Optional[str]   # set by human_gate node → interrupts graph
+    gate_type: Optional[str]  # set by human_gate node → interrupts graph
     gate_message: Optional[str]
     gate_feature: Optional[str]
-    gate_note:    Optional[str]   # set by human on resume
+    gate_note: Optional[str]  # set by human on resume
 
     # Error tracking
-    last_error:         str
+    last_error: str
     consecutive_errors: int
 
     # CTO model choice
-    cto_model:       str   # claude | gemini
-    validator_model: str   # gemini | claude
+    cto_model: str  # claude | gemini
+    validator_model: str  # gemini | claude

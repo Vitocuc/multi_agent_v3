@@ -4,10 +4,11 @@ schemas/cto_outputs.py
 Typed outputs for every CTO model call.
 Code validates these — not prompts.
 """
+
 from __future__ import annotations
 import re
-from typing import List, Dict, Optional
-from pydantic import BaseModel, Field, field_validator
+from typing import List, Dict
+from pydantic import BaseModel, field_validator
 
 
 class ServiceSpec(BaseModel):
@@ -16,11 +17,12 @@ class ServiceSpec(BaseModel):
     cache, queue, etc. The validator starts these on the shared Docker
     network before starting the app, so the app can reach them by `name`.
     """
-    name:  str                 # hostname on the shared network — e.g. "db", "redis"
-    image: str                 # docker image — e.g. "postgres:16-alpine", "redis:7-alpine"
-    port:  int                 # port the service listens on, for the readiness check
-    env:   Dict[str, str] = {} # env vars for the SERVICE container itself
-                                # (e.g. POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB)
+
+    name: str  # hostname on the shared network — e.g. "db", "redis"
+    image: str  # docker image — e.g. "postgres:16-alpine", "redis:7-alpine"
+    port: int  # port the service listens on, for the readiness check
+    env: Dict[str, str] = {}  # env vars for the SERVICE container itself
+    # (e.g. POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB)
 
     @field_validator("name")
     @classmethod
@@ -42,9 +44,9 @@ class ServiceSpec(BaseModel):
 
 
 class ClarificationQuestion(BaseModel):
-    question:      str
+    question: str
     why_important: str
-    sufficient:    bool = False
+    sufficient: bool = False
 
     @field_validator("question")
     @classmethod
@@ -61,17 +63,17 @@ class ClarificationQuestion(BaseModel):
 
 
 class SharedPlan(BaseModel):
-    summary:          str
-    key_decisions:    List[Dict[str, str]]
+    summary: str
+    key_decisions: List[Dict[str, str]]
     open_assumptions: List[str]
-    tech_stack:       Dict[str, str]
-    scope_boundary:   str
-    first_milestone:  str
-    app_type:         str               # "api" | "frontend" | "fullstack"
-    app_run_command:  str
-    app_port:         int
-    app_env:          Dict[str, str]    = {}
-    services:         List[ServiceSpec] = []
+    tech_stack: Dict[str, str]
+    scope_boundary: str
+    first_milestone: str
+    app_type: str  # "api" | "frontend" | "fullstack"
+    app_run_command: str
+    app_port: int
+    app_env: Dict[str, str] = {}
+    services: List[ServiceSpec] = []
 
     @field_validator("app_type")
     @classmethod
@@ -116,17 +118,17 @@ class SharedPlan(BaseModel):
 
 
 class FeatureBlock(BaseModel):
-    feature_id:          str
-    title:               str
-    milestone_id:        str
-    priority:            str
-    complexity:          str
-    depends_on:          List[str]
-    parallel_safe:       bool
-    description:         str
+    feature_id: str
+    title: str
+    milestone_id: str
+    priority: str
+    complexity: str
+    depends_on: List[str]
+    parallel_safe: bool
+    description: str
     security_constraints: List[str]
     acceptance_criteria: List[str]
-    branch_name:         str
+    branch_name: str
 
     @field_validator("acceptance_criteria")
     @classmethod
@@ -144,18 +146,19 @@ class SpawnPlan(BaseModel):
     Output of cto.build_spawn_plan().
     The CTO decides which features to run in this batch and in what order.
     """
-    batch:       List[str]           # feature_ids to spawn now (parallel-safe ones)
-    sequential:  List[List[str]]     # groups that must run in order after batch
-    reasoning:   str                 # CTO's explanation of the execution plan
+
+    batch: List[str]  # feature_ids to spawn now (parallel-safe ones)
+    sequential: List[List[str]]  # groups that must run in order after batch
+    reasoning: str  # CTO's explanation of the execution plan
 
 
 class ContractConsistencyCheck(BaseModel):
-    all_features_have_suites:  bool
-    all_security_refs_exist:   bool
-    all_criteria_testable:     bool
-    milestone_order_logical:   bool
-    issues:                    List[str]
-    approved:                  bool
+    all_features_have_suites: bool
+    all_security_refs_exist: bool
+    all_criteria_testable: bool
+    milestone_order_logical: bool
+    issues: List[str]
+    approved: bool
 
     @field_validator("approved")
     @classmethod

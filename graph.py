@@ -17,37 +17,36 @@ Correct execution order per feature:
 Workers and validators have zero git access.
 All version control is handled by git_node and merge_node using git_ops.py.
 """
+
 from __future__ import annotations
-import sys
 from pathlib import Path
-from typing import Dict, List, Optional
 
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from schemas.graph_state  import GraphState, FeatureContext, WorkerResult, ValidatorResult
+from schemas.graph_state import GraphState, ValidatorResult
 from schemas.pipeline_state import ProjectState, Phase, FeatureStatus, FeatureRecord
-from agents  import cto as cto_agent
-from agents  import worker as worker_agent
-from agents  import validator as validator_agent
+from agents import cto as cto_agent
+from agents import worker as worker_agent
+from agents import validator as validator_agent
 from feature_menu import present_and_select
-from memory  import store as mem_store
-from gates   import state_store
+from memory import store as mem_store
+from gates import state_store
 from docker.runner import build_image, DEFAULT_IMAGE
 import git_ops
-import json
 import os
 import subprocess
 
 ROOT = Path(__file__).parent
 
-RESET  = "\033[0m"
-BOLD   = "\033[1m"
-GREEN  = "\033[32m"
+RESET = "\033[0m"
+BOLD = "\033[1m"
+GREEN = "\033[32m"
 YELLOW = "\033[33m"
-RED    = "\033[31m"
-CYAN   = "\033[36m"
-DIM    = "\033[2m"
+RED = "\033[31m"
+CYAN = "\033[36m"
+DIM = "\033[2m"
+
 
 def c(col: str, txt: str) -> str:
     return f"{col}{txt}{RESET}"
@@ -57,11 +56,12 @@ def c(col: str, txt: str) -> str:
 # Node: CTO orchestrator
 # ---------------------------------------------------------------------------
 
+
 def cto_orchestrator(state: GraphState) -> GraphState:
     """Main routing node. Runs after every node completes."""
-    phase    = state.get("phase", "clarification")
+    phase = state.get("phase", "clarification")
     provider = state.get("cto_model", "claude")
-    ps       = state_store.load(ROOT)
+    ps = state_store.load(ROOT)
 
     # ── CLARIFICATION ────────────────────────────────────────────────────────
     if phase == "clarification":
@@ -74,18 +74,22 @@ def cto_orchestrator(state: GraphState) -> GraphState:
             plan = cto_agent.write_plan(history, provider, ROOT)
             ps.add_log("info", "Plan ready for review")
             state_store.save(ps, ROOT)
-            return {**state, "phase": "plan_review", "gate_type": "plan_approval",
-                    "gate_message": (
-                        f"Plan ready.\n\nSummary: {plan.summary}\n\n"
-                        f"First milestone: {plan.first_milestone}\n\n"
-                        "Review doc0_project_brief.md then:\n"
-                        "  python run.py resume --decision approve"
-                    )}
+            return {
+                **state,
+                "phase": "plan_review",
+                "gate_type": "plan_approval",
+                "gate_message": (
+                    f"Plan ready.\n\nSummary: {plan.summary}\n\n"
+                    f"First milestone: {plan.first_milestone}\n\n"
+                    "Review doc0_project_brief.md then:\n"
+                    "  python run.py resume --decision approve"
+                ),
+            }
 
         print()
         print(c(BOLD, f"CTO (round {state.get('clarification_round', 0) + 1}):"))
         print(q.question)
-        print(c(DIM,  f"  Why: {q.why_important}"))
+        print(c(DIM, f"  Why: {q.why_important}"))
         print()
         print(c(CYAN, "Your answer (Enter to skip): "), end="", flush=True)
         try:
@@ -97,14 +101,19 @@ def cto_orchestrator(state: GraphState) -> GraphState:
             ROOT, state.get("clarification_round", 0) + 1, q.question, answer
         )
         from llm.router import assistant_msg, user_msg
+
         new_history = list(state.get("clarification_history", [])) + [
-            assistant_msg(q.question), user_msg(answer)
+            assistant_msg(q.question),
+            user_msg(answer),
         ]
         ps.clarification_round += 1
         ps.add_log("info", f"Clarification round {ps.clarification_round}")
         state_store.save(ps, ROOT)
-        return {**state, "clarification_history": new_history,
-                "clarification_round": ps.clarification_round}
+        return {
+            **state,
+            "clarification_history": new_history,
+            "clarification_round": ps.clarification_round,
+        }
 
     # ── PLAN REVIEW (gate) ───────────────────────────────────────────────────
     if phase == "plan_review":
@@ -119,26 +128,30 @@ def cto_orchestrator(state: GraphState) -> GraphState:
     # ── CONTRACT GENERATION ──────────────────────────────────────────────────
     if phase == "contract_gen":
         print(c(CYAN, "  CTO: generating contracts..."))
-        result   = cto_agent.generate_contracts(provider, ROOT)
+        result = cto_agent.generate_contracts(provider, ROOT)
         features = result["features"]
         for f in features:
             fid = f["feature_id"]
             ps.features[fid] = FeatureRecord(
-                feature_id=fid, title=f.get("title", ""),
+                feature_id=fid,
+                title=f.get("title", ""),
                 milestone_id=f.get("milestone_id", ""),
                 depends_on=f.get("depends_on", []),
             )
         ps.phase = Phase.CONTRACT_REVIEW
         ps.add_log("info", f"Contracts generated: {len(features)} features")
         state_store.save(ps, ROOT)
-        return {**state, "phase": "contract_review",
-                "gate_type": "contract_approval",
-                "gate_message": (
-                    f"{len(features)} features across "
-                    f"{len(set(f.get('milestone_id','?') for f in features))} milestones.\n"
-                    "Review doc1, doc2, doc3 then:\n"
-                    "  python run.py resume --decision approve"
-                )}
+        return {
+            **state,
+            "phase": "contract_review",
+            "gate_type": "contract_approval",
+            "gate_message": (
+                f"{len(features)} features across "
+                f"{len(set(f.get('milestone_id', '?') for f in features))} milestones.\n"
+                "Review doc1, doc2, doc3 then:\n"
+                "  python run.py resume --decision approve"
+            ),
+        }
 
     # ── CONTRACT REVIEW (gate) ───────────────────────────────────────────────
     if phase == "contract_review":
@@ -155,21 +168,29 @@ def cto_orchestrator(state: GraphState) -> GraphState:
         # Ensure Docker test image exists before spawning workers
         image = os.environ.get("TEST_IMAGE", DEFAULT_IMAGE)
         import subprocess
-        r = subprocess.run(["docker", "image", "inspect", image],
-                          capture_output=True, text=True)
+
+        r = subprocess.run(
+            ["docker", "image", "inspect", image], capture_output=True, text=True
+        )
         if r.returncode != 0:
             print(c(DIM, f"  Building test image: {image}..."))
             result = build_image(ROOT, image)
             if result.exit_code != 0:
-                print(c(RED, f"  ✗ Failed to build test image (exit {result.exit_code})"))
-                return {**state, "phase": "implementation",
-                        "last_error": f"docker build failed: exit {result.exit_code}"}
+                print(
+                    c(RED, f"  ✗ Failed to build test image (exit {result.exit_code})")
+                )
+                return {
+                    **state,
+                    "phase": "implementation",
+                    "last_error": f"docker build failed: exit {result.exit_code}",
+                }
             print(c(GREEN, "  ✓ Test image built"))
 
         features_raw = _load_features_from_doc2(ROOT)
-        passed       = [fid for fid, fr in ps.features.items()
-                        if fr.status == FeatureStatus.PASSED]
-        selected     = present_and_select(features_raw, passed)
+        passed = [
+            fid for fid, fr in ps.features.items() if fr.status == FeatureStatus.PASSED
+        ]
+        selected = present_and_select(features_raw, passed)
         if not selected:
             print(c(YELLOW, "  No features selected."))
             return {**state, "phase": "complete"}
@@ -178,7 +199,9 @@ def cto_orchestrator(state: GraphState) -> GraphState:
         print(c(DIM, f"\n  Spawn plan: batch={spawn.batch}"))
         print(c(DIM, f"  Reasoning: {spawn.reasoning}\n"))
 
-        contexts = cto_agent.build_feature_contexts(features_raw, selected, passed, ROOT)
+        contexts = cto_agent.build_feature_contexts(
+            features_raw, selected, passed, ROOT
+        )
 
         # Setup git branches for all selected features NOW (before worker runs)
         for fid in selected:
@@ -189,7 +212,9 @@ def cto_orchestrator(state: GraphState) -> GraphState:
             print(c(DIM, f"  Setting up branch: {branch}"))
             r = git_ops.setup_branch(fid, branch, ROOT)
             if not r.success:
-                print(c(YELLOW, f"  ⚠ Branch setup warning for {fid}: {r.stderr[:100]}"))
+                print(
+                    c(YELLOW, f"  ⚠ Branch setup warning for {fid}: {r.stderr[:100]}")
+                )
 
         for fid in selected:
             if fid in ps.features:
@@ -197,10 +222,13 @@ def cto_orchestrator(state: GraphState) -> GraphState:
         ps.phase = Phase.IMPLEMENTATION
         ps.add_log("info", f"Selected {len(selected)} features: {selected}")
         state_store.save(ps, ROOT)
-        return {**state, "phase": "implementation",
-                "selected_features": selected,
-                "feature_contexts":  contexts,
-                "gate_type": None}
+        return {
+            **state,
+            "phase": "implementation",
+            "selected_features": selected,
+            "feature_contexts": contexts,
+            "gate_type": None,
+        }
 
     # ── IMPLEMENTATION ───────────────────────────────────────────────────────
     if phase == "implementation":
@@ -219,8 +247,9 @@ def cto_orchestrator(state: GraphState) -> GraphState:
 def _ensure_test_image(state: GraphState) -> bool:
     """Build the Docker test image if it doesn't exist. Returns True if ready."""
     image = os.environ.get("TEST_IMAGE", DEFAULT_IMAGE)
-    r = subprocess.run(["docker", "image", "inspect", image],
-                      capture_output=True, text=True)
+    r = subprocess.run(
+        ["docker", "image", "inspect", image], capture_output=True, text=True
+    )
     if r.returncode == 0:
         return True
     print(c(DIM, f"  Building test image: {image}..."))
@@ -234,11 +263,7 @@ def _ensure_test_image(state: GraphState) -> bool:
 
 def _route_implementation_state(state: GraphState, ps: ProjectState) -> GraphState:
     """Decide what to do next in implementation phase."""
-    worker_results  = state.get("worker_results", {}) or {}
-    val_results     = state.get("validator_results", {}) or {}
-    git_results     = state.get("git_results", {}) or {}
-    merge_results   = state.get("merge_results", {}) or {}
-    contexts        = state.get("feature_contexts", {}) or {}
+    worker_results = state.get("worker_results", {}) or {}
 
     if ps.is_complete():
         return {**state, "phase": "complete"}
@@ -246,15 +271,18 @@ def _route_implementation_state(state: GraphState, ps: ProjectState) -> GraphSta
     # If all SELECTED features are done (passed/skipped/failed), stop looping
     selected = set(state.get("selected_features", []) or [])
     if selected:
-        statuses = {fid: ps.features[fid].status for fid in selected if fid in ps.features}
-        done     = all(s in ("passed", "skipped", "failed") for s in statuses.values())
+        statuses = {
+            fid: ps.features[fid].status for fid in selected if fid in ps.features
+        }
+        done = all(s in ("passed", "skipped", "failed") for s in statuses.values())
         if done:
             if all(s == "failed" for s in statuses.values()):
                 # Separate genuine failures from cascading blocks.
                 # Blocked features had no chance to run — reset them to pending
                 # so they can be selected again once their dependency is retried.
                 blocked = [
-                    fid for fid in selected
+                    fid
+                    for fid in selected
                     if ps.features[fid].last_error.startswith("Blocked:")
                 ]
                 genuine = [fid for fid in selected if fid not in blocked]
@@ -262,21 +290,36 @@ def _route_implementation_state(state: GraphState, ps: ProjectState) -> GraphSta
                     ps.features[fid].status = FeatureStatus.PENDING
                     ps.features[fid].last_error = ""
                 if blocked:
-                    ps.add_log("info", f"Reset {len(blocked)} blocked features to pending: {blocked}")
+                    ps.add_log(
+                        "info",
+                        f"Reset {len(blocked)} blocked features to pending: {blocked}",
+                    )
                     state_store.save(ps, ROOT)
                 print(c(RED, f"  ✗ {len(genuine)} feature(s) failed: {genuine}"))
                 if blocked:
-                    print(c(YELLOW, f"  {len(blocked)} feature(s) unblocked (reset to pending): {blocked}"))
-                print(c(YELLOW, "  Returning to feature selection — retry the failed feature(s)."))
-                return {**state,
-                        "phase": "feature_selection",
-                        "selected_features": [],
-                        "feature_contexts":  {},
-                        "worker_results":    {},
-                        "git_results":       {},
-                        "validator_results": {},
-                        "merge_results":     {},
-                        "gate_type": None}
+                    print(
+                        c(
+                            YELLOW,
+                            f"  {len(blocked)} feature(s) unblocked (reset to pending): {blocked}",
+                        )
+                    )
+                print(
+                    c(
+                        YELLOW,
+                        "  Returning to feature selection — retry the failed feature(s).",
+                    )
+                )
+                return {
+                    **state,
+                    "phase": "feature_selection",
+                    "selected_features": [],
+                    "feature_contexts": {},
+                    "worker_results": {},
+                    "git_results": {},
+                    "validator_results": {},
+                    "merge_results": {},
+                    "gate_type": None,
+                }
             else:
                 print(c(GREEN, "  ✓ All selected features complete."))
             return {**state, "phase": "complete"}
@@ -296,10 +339,11 @@ def _route_implementation_state(state: GraphState, ps: ProjectState) -> GraphSta
 # Node: worker
 # ---------------------------------------------------------------------------
 
+
 def worker_node(state: GraphState) -> GraphState:
     """Implement one feature. No git access."""
-    contexts       = dict(state.get("feature_contexts", {}) or {})
-    worker_results = dict(state.get("worker_results",  {}) or {})
+    contexts = dict(state.get("feature_contexts", {}) or {})
+    worker_results = dict(state.get("worker_results", {}) or {})
 
     for fid, ctx in contexts.items():
         if fid in worker_results:
@@ -308,8 +352,10 @@ def worker_node(state: GraphState) -> GraphState:
         # Block if any dependency failed — don't waste a worker run on doomed code.
         ps = state_store.load(ROOT)
         failed_deps = [
-            dep for dep in ctx.get("depends_on", [])
-            if ps.features.get(dep, FeatureRecord(feature_id=dep)).status == FeatureStatus.FAILED
+            dep
+            for dep in ctx.get("depends_on", [])
+            if ps.features.get(dep, FeatureRecord(feature_id=dep)).status
+            == FeatureStatus.FAILED
         ]
         if failed_deps:
             error = f"Blocked: dependencies failed — {', '.join(failed_deps)}"
@@ -318,10 +364,18 @@ def worker_node(state: GraphState) -> GraphState:
             ps.features[fid].last_error = error
             ps.add_log("error", f"{fid} blocked by failed deps", error)
             state_store.save(ps, ROOT)
-            return {**state, "worker_results": {
-                **worker_results,
-                fid: {"feature_id": fid, "success": False, "milestone_report": "", "error": error},
-            }}
+            return {
+                **state,
+                "worker_results": {
+                    **worker_results,
+                    fid: {
+                        "feature_id": fid,
+                        "success": False,
+                        "milestone_report": "",
+                        "error": error,
+                    },
+                },
+            }
 
         print(c(BOLD, f"\n  → Worker: {fid} — {ctx['title']}"))
 
@@ -349,6 +403,7 @@ def worker_node(state: GraphState) -> GraphState:
 # Node: git_node — pipeline-owned, no AI
 # ---------------------------------------------------------------------------
 
+
 def git_node(state: GraphState) -> GraphState:
     """
     Pipeline-owned git operations. Fires after worker completes.
@@ -358,21 +413,25 @@ def git_node(state: GraphState) -> GraphState:
     No AI involved — pure Python subprocess via git_ops.py.
     """
     worker_results = dict(state.get("worker_results", {}) or {})
-    git_results    = dict(state.get("git_results",    {}) or {})
-    contexts       = dict(state.get("feature_contexts", {}) or {})
+    git_results = dict(state.get("git_results", {}) or {})
+    contexts = dict(state.get("feature_contexts", {}) or {})
 
     for fid, wr in worker_results.items():
         if fid in git_results:
             continue
 
-        ctx        = contexts.get(fid, {})
-        branch     = ctx.get("branch_name", f"feature/{fid.lower()}")
-        title      = ctx.get("title", fid)
-        report     = ROOT / "reports" / f"{fid}_milestone.md"
+        ctx = contexts.get(fid, {})
+        branch = ctx.get("branch_name", f"feature/{fid.lower()}")
+        title = ctx.get("title", fid)
+        report = ROOT / "reports" / f"{fid}_milestone.md"
 
         if not wr.get("success"):
             # Worker failed — skip git, record failure
-            git_results[fid] = {"success": False, "error": "worker_failed", "pr_url": ""}
+            git_results[fid] = {
+                "success": False,
+                "error": "worker_failed",
+                "pr_url": "",
+            }
             return {**state, "git_results": git_results}
 
         # The upfront branch-setup loop in feature_selection checks out each
@@ -415,14 +474,16 @@ def git_node(state: GraphState) -> GraphState:
             print(c(GREEN, f"  ✓ PR opened: {pr_url}"))
         else:
             print(c(YELLOW, f"  ⚠ PR open failed: {pr_r.output[:120]}"))
-            print(c(DIM,    "  You can open it manually on GitHub."))
+            print(c(DIM, "  You can open it manually on GitHub."))
 
         git_results[fid] = {"success": True, "error": "", "pr_url": pr_url}
 
         ps = state_store.load(ROOT)
         if fid in ps.features:
             ps.features[fid].status = FeatureStatus.VALIDATING
-            ps.add_log("info", f"PR opened for {fid}: {pr_url} — running validator next")
+            ps.add_log(
+                "info", f"PR opened for {fid}: {pr_url} — running validator next"
+            )
             state_store.save(ps, ROOT)
 
         # Validator runs next — human only reviews code that already passed the spec
@@ -435,6 +496,7 @@ def git_node(state: GraphState) -> GraphState:
 # Node: human gate
 # ---------------------------------------------------------------------------
 
+
 def human_gate(state: GraphState) -> GraphState:
     """LangGraph interrupts before this node. Graph pauses until resume."""
     return state
@@ -444,22 +506,27 @@ def human_gate(state: GraphState) -> GraphState:
 # Node: validator
 # ---------------------------------------------------------------------------
 
+
 def validator_node(state: GraphState) -> GraphState:
     """
     Validate milestone report vs doc3 test suite.
     Fires AFTER human gate approval — validator never runs on unreviewed code.
     """
     worker_results = dict(state.get("worker_results", {}) or {})
-    val_results    = dict(state.get("validator_results", {}) or {})
-    provider       = state.get("validator_model", "gemini")
+    val_results = dict(state.get("validator_results", {}) or {})
+    provider = state.get("validator_model", "gemini")
 
     for fid, wr in worker_results.items():
         if fid in val_results:
             continue
         if not wr.get("success"):
             val_results[fid] = ValidatorResult(
-                feature_id=fid, overall="fail", blocking_passed=False,
-                failures=["worker_failed"], escalations=[], results=[],
+                feature_id=fid,
+                overall="fail",
+                blocking_passed=False,
+                failures=["worker_failed"],
+                escalations=[],
+                results=[],
             )
             return {**state, "validator_results": val_results}
 
@@ -474,12 +541,18 @@ def validator_node(state: GraphState) -> GraphState:
         ps = state_store.load(ROOT)
         if fid in ps.features:
             if result["overall"] == "pass":
-                ps.features[fid].status = FeatureStatus.IN_PROGRESS  # awaiting human gate
+                ps.features[
+                    fid
+                ].status = FeatureStatus.IN_PROGRESS  # awaiting human gate
                 ps.features[fid].validator_result = "pass"
-                print(c(GREEN, f"  ✓ {fid} passed validation — awaiting your PR review"))
+                print(
+                    c(GREEN, f"  ✓ {fid} passed validation — awaiting your PR review")
+                )
                 # Extract memory now — useful context even before merge
-                mem   = mem_store.load(ROOT)
-                added = mem_store.append_from_milestone(wr["milestone_report"], fid, mem)
+                mem = mem_store.load(ROOT)
+                added = mem_store.append_from_milestone(
+                    wr["milestone_report"], fid, mem
+                )
                 mem_store.save(mem, ROOT)
                 total = sum(len(v) for v in added.values())
                 if total:
@@ -492,28 +565,34 @@ def validator_node(state: GraphState) -> GraphState:
                     print(c(RED, f"    Failed: {result['failures']}"))
                 if result["escalations"]:
                     print(c(RED, f"    Security escalations: {result['escalations']}"))
-            ps.add_log("info" if result["overall"] == "pass" else "warn",
-                       f"Validator {fid}: {result['overall']}")
+            ps.add_log(
+                "info" if result["overall"] == "pass" else "warn",
+                f"Validator {fid}: {result['overall']}",
+            )
             state_store.save(ps, ROOT)
 
         new_val_results = {**val_results, fid: result}
 
         # If validation passed: set human gate for PR review
         if result["overall"] == "pass":
-            ctx     = dict(state.get("feature_contexts", {}) or {}).get(fid, {})
-            pr_url  = dict(state.get("git_results", {}) or {}).get(fid, {}).get("pr_url", "")
-            return {**state,
-                    "validator_results": new_val_results,
-                    "gate_type":    "pr_review",
-                    "gate_feature": fid,
-                    "gate_message": (
-                        f"[{fid}] {ctx.get('title', '')} passed validation.\n"
-                        f"PR: {pr_url or 'check GitHub'}\n\n"
-                        "The code passed all spec tests. Now review the diff on GitHub.\n"
-                        "Approve the PR there, then run:\n"
-                        f"  python run.py gh-check {fid}\n"
-                        "  python run.py resume --decision approve"
-                    )}
+            ctx = dict(state.get("feature_contexts", {}) or {}).get(fid, {})
+            pr_url = (
+                dict(state.get("git_results", {}) or {}).get(fid, {}).get("pr_url", "")
+            )
+            return {
+                **state,
+                "validator_results": new_val_results,
+                "gate_type": "pr_review",
+                "gate_feature": fid,
+                "gate_message": (
+                    f"[{fid}] {ctx.get('title', '')} passed validation.\n"
+                    f"PR: {pr_url or 'check GitHub'}\n\n"
+                    "The code passed all spec tests. Now review the diff on GitHub.\n"
+                    "Approve the PR there, then run:\n"
+                    f"  python run.py gh-check {fid}\n"
+                    "  python run.py resume --decision approve"
+                ),
+            }
 
         return {**state, "validator_results": new_val_results}
 
@@ -524,13 +603,14 @@ def validator_node(state: GraphState) -> GraphState:
 # Node: merge_node — pipeline-owned, no AI
 # ---------------------------------------------------------------------------
 
+
 def merge_node(state: GraphState) -> GraphState:
     """
     Merge the feature PR into develop after validation passes.
     Pipeline-owned — no AI involvement.
     """
-    val_results    = dict(state.get("validator_results", {}) or {})
-    merge_results  = dict(state.get("merge_results",    {}) or {})
+    val_results = dict(state.get("validator_results", {}) or {})
+    merge_results = dict(state.get("merge_results", {}) or {})
 
     for fid, vr in val_results.items():
         if fid in merge_results:
@@ -555,7 +635,7 @@ def merge_node(state: GraphState) -> GraphState:
                 state_store.save(ps, ROOT)
         else:
             print(c(YELLOW, f"  ⚠ Auto-merge failed: {r.output[:120]}"))
-            print(c(DIM,    "  Merge manually on GitHub or re-run after checks pass."))
+            print(c(DIM, "  Merge manually on GitHub or re-run after checks pass."))
 
         merge_results[fid] = {"success": r.success, "error": r.stderr[:200]}
         return {**state, "merge_results": merge_results}
@@ -567,14 +647,20 @@ def merge_node(state: GraphState) -> GraphState:
 # Routing functions
 # ---------------------------------------------------------------------------
 
+
 def route_from_cto(state: GraphState) -> str:
     phase = state.get("phase", "clarification")
-    gate  = state.get("gate_type")
+    gate = state.get("gate_type")
 
     if gate:
         return "human_gate"
-    if phase in ("clarification", "plan_review", "contract_gen",
-                 "contract_review", "feature_selection"):
+    if phase in (
+        "clarification",
+        "plan_review",
+        "contract_gen",
+        "contract_review",
+        "feature_selection",
+    ):
         return "cto_orchestrator"
     if phase == "implementation":
         return _route_impl(state)
@@ -589,11 +675,11 @@ def _route_impl(state: GraphState) -> str:
       worker → git → validator → human_gate → merge
     Validator runs before human review — you only review code that passed the spec.
     """
-    contexts       = state.get("feature_contexts", {}) or {}
-    worker_results = state.get("worker_results",   {}) or {}
-    git_results    = state.get("git_results",      {}) or {}
-    val_results    = state.get("validator_results",{}) or {}
-    merge_results  = state.get("merge_results",    {}) or {}
+    contexts = state.get("feature_contexts", {}) or {}
+    worker_results = state.get("worker_results", {}) or {}
+    git_results = state.get("git_results", {}) or {}
+    val_results = state.get("validator_results", {}) or {}
+    merge_results = state.get("merge_results", {}) or {}
 
     # Need merge? (after human gate approved)
     for fid in val_results:
@@ -627,15 +713,21 @@ def _route_impl(state: GraphState) -> str:
 def route_after_worker(state: GraphState) -> str:
     return "git"
 
+
 def route_after_git(state: GraphState) -> str:
-    return "validator"   # validator always fires after git — no human gate here
+    return "validator"  # validator always fires after git — no human gate here
+
 
 def route_after_validator(state: GraphState) -> str:
     gate = state.get("gate_type")
-    return "human_gate" if gate else "cto_orchestrator"  # gate set = pass, no gate = fail
+    return (
+        "human_gate" if gate else "cto_orchestrator"
+    )  # gate set = pass, no gate = fail
+
 
 def route_after_gate(state: GraphState) -> str:
-    return "merge"       # human approved → merge immediately
+    return "merge"  # human approved → merge immediately
+
 
 def route_after_merge(state: GraphState) -> str:
     return "cto_orchestrator"
@@ -645,35 +737,46 @@ def route_after_merge(state: GraphState) -> str:
 # Graph builder
 # ---------------------------------------------------------------------------
 
+
 def build_graph(db_path: str = "checkpoints.db") -> StateGraph:
     builder = StateGraph(GraphState)
 
     builder.add_node("cto_orchestrator", cto_orchestrator)
-    builder.add_node("worker",           worker_node)
-    builder.add_node("git",              git_node)
-    builder.add_node("human_gate",       human_gate)
-    builder.add_node("validator",        validator_node)
-    builder.add_node("merge",            merge_node)
+    builder.add_node("worker", worker_node)
+    builder.add_node("git", git_node)
+    builder.add_node("human_gate", human_gate)
+    builder.add_node("validator", validator_node)
+    builder.add_node("merge", merge_node)
 
     builder.set_entry_point("cto_orchestrator")
 
-    builder.add_conditional_edges("cto_orchestrator", route_from_cto, {
-        "cto_orchestrator": "cto_orchestrator",
-        "worker":           "worker",
-        "git":              "git",
-        "validator":        "validator",
-        "merge":            "merge",
-        "human_gate":       "human_gate",
-        END:                END,
-    })
-    builder.add_conditional_edges("worker",    route_after_worker,   {"git":              "git"})
-    builder.add_conditional_edges("git",       route_after_git,      {"validator":        "validator"})
-    builder.add_conditional_edges("validator", route_after_validator, {"human_gate":       "human_gate",
-                                                                        "cto_orchestrator": "cto_orchestrator"})
-    builder.add_conditional_edges("human_gate", route_after_gate,    {"merge":            "merge"})
-    builder.add_conditional_edges("merge",     route_after_merge,    {"cto_orchestrator": "cto_orchestrator"})
+    builder.add_conditional_edges(
+        "cto_orchestrator",
+        route_from_cto,
+        {
+            "cto_orchestrator": "cto_orchestrator",
+            "worker": "worker",
+            "git": "git",
+            "validator": "validator",
+            "merge": "merge",
+            "human_gate": "human_gate",
+            END: END,
+        },
+    )
+    builder.add_conditional_edges("worker", route_after_worker, {"git": "git"})
+    builder.add_conditional_edges("git", route_after_git, {"validator": "validator"})
+    builder.add_conditional_edges(
+        "validator",
+        route_after_validator,
+        {"human_gate": "human_gate", "cto_orchestrator": "cto_orchestrator"},
+    )
+    builder.add_conditional_edges("human_gate", route_after_gate, {"merge": "merge"})
+    builder.add_conditional_edges(
+        "merge", route_after_merge, {"cto_orchestrator": "cto_orchestrator"}
+    )
 
     import sqlite3
+
     conn = sqlite3.connect(db_path, check_same_thread=False)
     checkpointer = SqliteSaver(conn)
     return builder.compile(
@@ -686,6 +789,7 @@ def build_graph(db_path: str = "checkpoints.db") -> StateGraph:
 # Codebase index
 # ---------------------------------------------------------------------------
 
+
 def _generate_codebase_index(root: Path) -> None:
     """
     Write codebase_index.md after each feature merge.
@@ -695,8 +799,17 @@ def _generate_codebase_index(root: Path) -> None:
     from datetime import date
 
     _SKIP_DIRS = {
-        ".git", "node_modules", "__pycache__", ".pytest_cache",
-        "venv", ".venv", "dist", "build", ".mypy_cache", ".tox", "reports",
+        ".git",
+        "node_modules",
+        "__pycache__",
+        ".pytest_cache",
+        "venv",
+        ".venv",
+        "dist",
+        "build",
+        ".mypy_cache",
+        ".tox",
+        "reports",
     }
     _SRC_EXTS = {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".rb"}
 
@@ -770,8 +883,10 @@ def _generate_codebase_index(root: Path) -> None:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _load_features_from_doc2(root: Path):
     from agents.cto import _parse_feature_blocks
+
     doc2 = root / "contracts" / "doc2_features_contract.md"
     if not doc2.exists():
         return []

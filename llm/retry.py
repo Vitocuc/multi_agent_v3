@@ -10,6 +10,7 @@ Pattern:
 
 This is what removes prompt-dependency: schema enforced by code, not hope.
 """
+
 from __future__ import annotations
 import json
 import re
@@ -43,22 +44,22 @@ def extract_json(text: str):
 
 
 def call_structured(
-    provider:     str,
-    messages:     List[Dict],
-    system:       str,
-    schema:       Type[T],
-    temperature:  float = 0.3,
-    max_attempts: int   = 3,
-    label:        str   = "",
+    provider: str,
+    messages: List[Dict],
+    system: str,
+    schema: Type[T],
+    temperature: float = 0.3,
+    max_attempts: int = 3,
+    label: str = "",
 ) -> T:
-    label   = label or schema.__name__
+    label = label or schema.__name__
     history = list(messages)
     last_raw: Optional[str] = None
     last_err: Optional[str] = None
 
     for attempt in range(1, max_attempts + 1):
         try:
-            raw      = call(provider, history, system, temperature)
+            raw = call(provider, history, system, temperature)
             last_raw = raw
             return schema.model_validate(extract_json(raw))
         except (ValueError, LLMError) as e:
@@ -79,7 +80,7 @@ def call_structured(
         )
         history = list(messages) + [
             {"role": "assistant", "content": last_raw or ""},
-            {"role": "user",      "content": correction},
+            {"role": "user", "content": correction},
         ]
 
     raise StructuredOutputError(label, max_attempts, last_err or "", last_raw or "")
@@ -87,8 +88,8 @@ def call_structured(
 
 class StructuredOutputError(Exception):
     def __init__(self, schema: str, attempts: int, error: str, raw: str):
-        self.schema   = schema
+        self.schema = schema
         self.attempts = attempts
-        self.error    = error
-        self.raw      = raw
+        self.error = error
+        self.raw = raw
         super().__init__(f"Failed {schema} after {attempts} attempts: {error}")

@@ -13,6 +13,7 @@ Two responsibilities:
 
 The project directory is mounted at /project in every container.
 """
+
 from __future__ import annotations
 import os
 import re
@@ -22,20 +23,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-DEFAULT_IMAGE     = "dev-assistant-test"
-NETWORK_NAME      = "dev-assistant-net"
-TIMEOUT_SECONDS   = 300    # one-off command timeout
-APP_READY_TIMEOUT = 60     # seconds to wait for app to start responding
-MAX_OUTPUT_CHARS  = 4000
+DEFAULT_IMAGE = "dev-assistant-test"
+NETWORK_NAME = "dev-assistant-net"
+TIMEOUT_SECONDS = 300  # one-off command timeout
+APP_READY_TIMEOUT = 60  # seconds to wait for app to start responding
+MAX_OUTPUT_CHARS = 4000
 
 
 @dataclass
 class CommandResult:
-    command:   str
+    command: str
     exit_code: int
-    stdout:    str
-    stderr:    str
-    summary:   str
+    stdout: str
+    stderr: str
+    summary: str
     timed_out: bool = False
 
     @property
@@ -50,12 +51,14 @@ class DockerRunner:
     Raises ImageNotBuiltError if the test image does not exist.
     """
 
-    def __init__(self, root: Path, image: Optional[str] = None, env_forward: bool = True) -> None:
-        self.root        = root.resolve()
-        self.image       = image or os.environ.get("TEST_IMAGE", DEFAULT_IMAGE)
-        self.network     = NETWORK_NAME
+    def __init__(
+        self, root: Path, image: Optional[str] = None, env_forward: bool = True
+    ) -> None:
+        self.root = root.resolve()
+        self.image = image or os.environ.get("TEST_IMAGE", DEFAULT_IMAGE)
+        self.network = NETWORK_NAME
         self.env_forward = env_forward
-        self._verified   = False
+        self._verified = False
 
     # ------------------------------------------------------------------
     # Setup
@@ -73,7 +76,9 @@ class DockerRunner:
                 "and try again."
             )
 
-        r = subprocess.run(["docker", "image", "inspect", self.image], capture_output=True, timeout=10)
+        r = subprocess.run(
+            ["docker", "image", "inspect", self.image], capture_output=True, timeout=10
+        )
         if r.returncode != 0:
             raise ImageNotBuiltError(
                 f"Test image '{self.image}' not found. Build it first:\n"
@@ -87,7 +92,8 @@ class DockerRunner:
         """Create the shared docker network if it doesn't exist. Idempotent."""
         subprocess.run(
             ["docker", "network", "create", self.network],
-            capture_output=True, timeout=15,
+            capture_output=True,
+            timeout=15,
         )
         # Non-zero exit if it already exists — that's fine, ignore.
 
@@ -95,7 +101,9 @@ class DockerRunner:
     # One-off commands (worker test_runner tool, generated test execution)
     # ------------------------------------------------------------------
 
-    def run(self, command: str, workdir: str = "/project", network: Optional[str] = None) -> CommandResult:
+    def run(
+        self, command: str, workdir: str = "/project", network: Optional[str] = None
+    ) -> CommandResult:
         """
         Run a one-off command inside the test container.
         network=None         -> --network host (internet access, for installs/lint/test/audit)
@@ -124,16 +132,22 @@ class DockerRunner:
         docker_cmd += [self.image, "bash", "-c", command]
 
         try:
-            proc = subprocess.run(docker_cmd, capture_output=True, text=True, timeout=TIMEOUT_SECONDS)
+            proc = subprocess.run(
+                docker_cmd, capture_output=True, text=True, timeout=TIMEOUT_SECONDS
+            )
             stdout, stderr = proc.stdout or "", proc.stderr or ""
             return CommandResult(
-                command=command, exit_code=proc.returncode,
-                stdout=stdout, stderr=stderr,
+                command=command,
+                exit_code=proc.returncode,
+                stdout=stdout,
+                stderr=stderr,
                 summary=_make_summary(command, proc.returncode, stdout + stderr),
             )
         except subprocess.TimeoutExpired:
             return CommandResult(
-                command=command, exit_code=124, stdout="",
+                command=command,
+                exit_code=124,
+                stdout="",
                 stderr=f"Command timed out after {TIMEOUT_SECONDS}s",
                 summary=f"TIMEOUT after {TIMEOUT_SECONDS}s: {command[:60]}",
                 timed_out=True,
@@ -153,7 +167,9 @@ class DockerRunner:
     # Application lifecycle (validator)
     # ------------------------------------------------------------------
 
-    def start_app(self, run_command: str, port: int, container_name: str) -> CommandResult:
+    def start_app(
+        self, run_command: str, port: int, container_name: str
+    ) -> CommandResult:
         """
         Start the application in the background, attached to the shared network.
         Removes any existing container with the same name first.
@@ -162,14 +178,22 @@ class DockerRunner:
         """
         self.verify()
         self.ensure_network()
-        subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, timeout=15)
+        subprocess.run(
+            ["docker", "rm", "-f", container_name], capture_output=True, timeout=15
+        )
 
         docker_cmd = [
-            "docker", "run", "-d",
-            "--name", container_name,
-            "--network", self.network,
-            "-v", f"{self.root}:/project",
-            "-w", "/project",
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            container_name,
+            "--network",
+            self.network,
+            "-v",
+            f"{self.root}:/project",
+            "-w",
+            "/project",
         ]
         if self.env_forward:
             for key, val in self._safe_env().items():
@@ -178,19 +202,29 @@ class DockerRunner:
         docker_cmd += [self.image, "bash", "-c", run_command]
 
         try:
-            proc = subprocess.run(docker_cmd, capture_output=True, text=True, timeout=30)
+            proc = subprocess.run(
+                docker_cmd, capture_output=True, text=True, timeout=30
+            )
             return CommandResult(
-                command=run_command, exit_code=proc.returncode,
-                stdout=proc.stdout, stderr=proc.stderr,
+                command=run_command,
+                exit_code=proc.returncode,
+                stdout=proc.stdout,
+                stderr=proc.stderr,
                 summary=f"start_app: {'started' if proc.returncode == 0 else 'failed'}",
             )
         except subprocess.TimeoutExpired:
             return CommandResult(
-                command=run_command, exit_code=124, stdout="", stderr="docker run timed out",
-                summary="start_app: timed out", timed_out=True,
+                command=run_command,
+                exit_code=124,
+                stdout="",
+                stderr="docker run timed out",
+                summary="start_app: timed out",
+                timed_out=True,
             )
 
-    def wait_for_app(self, container_name: str, port: int, timeout: int = APP_READY_TIMEOUT) -> bool:
+    def wait_for_app(
+        self, container_name: str, port: int, timeout: int = APP_READY_TIMEOUT
+    ) -> bool:
         """
         Poll the app container until it responds on `port`, or timeout.
         Checks from inside the container against localhost — any HTTP
@@ -200,15 +234,24 @@ class DockerRunner:
         for _ in range(timeout):
             ps = subprocess.run(
                 ["docker", "inspect", "-f", "{{.State.Running}}", container_name],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             if ps.returncode != 0 or ps.stdout.strip() != "true":
                 return False  # container exited — crashed on startup
 
             check = subprocess.run(
-                ["docker", "exec", container_name, "bash", "-c",
-                 f"curl -s -o /dev/null --max-time 2 http://localhost:{port}/"],
-                capture_output=True, timeout=10,
+                [
+                    "docker",
+                    "exec",
+                    container_name,
+                    "bash",
+                    "-c",
+                    f"curl -s -o /dev/null --max-time 2 http://localhost:{port}/",
+                ],
+                capture_output=True,
+                timeout=10,
             )
             if check.returncode == 0:
                 return True
@@ -218,12 +261,16 @@ class DockerRunner:
     def get_app_logs(self, container_name: str, tail: int = 60) -> str:
         r = subprocess.run(
             ["docker", "logs", "--tail", str(tail), container_name],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         return (r.stdout + r.stderr).strip()
 
     def stop_app(self, container_name: str) -> None:
-        subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, timeout=30)
+        subprocess.run(
+            ["docker", "rm", "-f", container_name], capture_output=True, timeout=30
+        )
 
     # ------------------------------------------------------------------
     # Helpers
@@ -239,8 +286,20 @@ class DockerRunner:
         for k, v in os.environ.items():
             if secret_patterns.search(k):
                 continue
-            if k.startswith(("NODE_", "NPM_", "PYTHON", "PATH", "HOME",
-                              "CI", "TEST_", "APP_", "PORT", "HOST")):
+            if k.startswith(
+                (
+                    "NODE_",
+                    "NPM_",
+                    "PYTHON",
+                    "PATH",
+                    "HOME",
+                    "CI",
+                    "TEST_",
+                    "APP_",
+                    "PORT",
+                    "HOST",
+                )
+            ):
                 safe[k] = v
         return safe
 
@@ -253,11 +312,15 @@ def build_image(root: Path, image: str = DEFAULT_IMAGE) -> CommandResult:
 
     proc = subprocess.run(
         ["docker", "build", "-f", "Dockerfile.test", "-t", image, "."],
-        cwd=root, capture_output=False, timeout=600,
+        cwd=root,
+        capture_output=False,
+        timeout=600,
     )
     return CommandResult(
         command=f"docker build -f Dockerfile.test -t {image} .",
-        exit_code=proc.returncode, stdout="(streamed to terminal)", stderr="",
+        exit_code=proc.returncode,
+        stdout="(streamed to terminal)",
+        stderr="",
         summary=f"Image build {'succeeded' if proc.returncode == 0 else 'FAILED'}",
     )
 
@@ -266,11 +329,23 @@ def _make_summary(command: str, exit_code: int, output: str) -> str:
     """One-line summary safe for milestone reports — strips ANSI codes and secret-looking lines."""
     clean = re.sub(r"\x1b\[[0-9;]*m", "", output)
     secret_line = re.compile(
-        r"(api.?key|token|password|secret|credential)\s*[:=]\s*\S+", re.IGNORECASE,
+        r"(api.?key|token|password|secret|credential)\s*[:=]\s*\S+",
+        re.IGNORECASE,
     )
-    lines = [l for l in clean.splitlines() if not secret_line.search(l)]
-    keywords = ("error", "fail", "warn", "passed", "found", "vulnerabilit",
-                "coverage", "success", "added", "removed", "updated")
+    lines = [line for line in clean.splitlines() if not secret_line.search(line)]
+    keywords = (
+        "error",
+        "fail",
+        "warn",
+        "passed",
+        "found",
+        "vulnerabilit",
+        "coverage",
+        "success",
+        "added",
+        "removed",
+        "updated",
+    )
     best = ""
     for line in reversed(lines):
         line = line.strip()
@@ -289,9 +364,11 @@ def _make_summary(command: str, exit_code: int, output: str) -> str:
 
 class DockerNotAvailableError(Exception):
     """Docker daemon is not running."""
+
     pass
 
 
 class ImageNotBuiltError(Exception):
     """Test image has not been built yet."""
+
     pass
