@@ -250,7 +250,7 @@ resolved: true
 
 <!-- MANAGED BY CTO ORCHESTRATOR — written once clarification is complete. -->
 
-shared_plan_approved: false
+shared_plan_approved: true
 
 summary: >
   Protego Life Simulator is a behavioral finance PWA built as a fullstack Next.js 14 application with a FastAPI microservice for behavioral event ingestion. The frontend is a React-based PWA using Chakra UI with Italian i18n, installable on iOS and Android. Authentication uses NextAuth.js with Google OAuth plus a DOB age gate (18+). All user state, wallet, and game data lives in PostgreSQL 16 with TimescaleDB extension enabling time-bucketed KPI queries and CSV export for offline ML analysis. Metabase OSS self-hosted on Railway EU West provides the internal analytics dashboard. Redis handles session storage and rate limiting. All services run on Railway EU West (Frankfurt) to satisfy GDPR and Italian Codice Privacy data residency requirements.
