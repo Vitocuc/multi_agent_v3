@@ -159,26 +159,32 @@ def _load_contract_if_valid(root: Path, filename: str) -> str | None:
     """Return file content if it exists and looks like a filled contract (not a template or JSON-wrapped)."""
     p = root / "contracts" / filename
     if not p.exists():
+        print(f"  [cto]   {filename}: not found")
         return None
     raw = p.read_text()
     if not raw or len(raw) < 200:
+        print(f"  [cto]   {filename}: too short ({len(raw)} chars) — treating as empty")
         return None
     # Reject if JSON-wrapped (starts with {)
     if raw.strip().startswith("{"):
+        print(f"  [cto]   {filename}: JSON-wrapped — will regenerate")
         return None
-    # Reject if still an unfilled template — any of these markers indicate placeholder content
+    # Reject if still an unfilled template.
+    # Use markers that only appear in blank templates, NOT in real filled content.
     template_markers = [
-        'project_id | |',          # empty table cell
-        'created_at | |',
-        'feature_id:         F-01-001\n',   # default feature_id never overwritten
-        '| F-01-001 | | M-01 |',            # feature tracker still has blank title
-        '[Feature name]',
-        'title:              ""',
-        'status | draft \\| approved \\| superseded',  # unevaluated status placeholder
+        ('project_id | |',                       'empty project_id table cell'),
+        ('created_at | |',                        'empty created_at table cell'),
+        ('[Feature name]',                        'literal [Feature name] placeholder'),
+        ('title:              ""',                'empty title field'),
+        ('status | draft \\| approved \\| superseded', 'unevaluated status placeholder'),
+        ('mechanism:          # e.g.',            'unfilled auth mechanism comment'),
+        ('total_features | |',                    'empty total_features field'),
     ]
-    for marker in template_markers:
+    for marker, reason in template_markers:
         if marker in raw:
+            print(f"  [cto]   {filename}: unfilled template detected ({reason}) — will regenerate")
             return None
+    print(f"  [cto]   {filename}: looks valid ({len(raw):,} chars) — skipping regeneration")
     return raw
 
 
@@ -191,11 +197,12 @@ def generate_contracts(provider: str, root: Path = ROOT) -> Dict:
     doc0 = (root / "contracts" / "doc0_project_brief.md").read_text()
 
     # ── Security contract (skip if already valid) ────────────────────────────
+    print("  [cto] checking doc1 (security contract)...")
     existing_sec = _load_contract_if_valid(root, "doc1_security_contract.md")
     if existing_sec:
-        print("  [cto] doc1 already valid — skipping")
         sec_raw = existing_sec
     else:
+        print("  [cto] generating doc1 — calling LLM (30–60s)...")
         tpl1 = _load_template(root, "doc1_security_contract.md")
         sec_raw = call(
             provider,
@@ -220,14 +227,16 @@ def generate_contracts(provider: str, root: Path = ROOT) -> Dict:
             max_tokens=32768,
         )
         _save(root, "doc1_security_contract.md", _unwrap_llm_output(sec_raw))
+        print("  [cto] doc1 saved ✓")
 
     # ── Features contract (skip if already valid) ────────────────────────────
+    print("  [cto] checking doc2 (features contract)...")
     existing_feat = _load_contract_if_valid(root, "doc2_features_contract.md")
     if existing_feat:
-        print("  [cto] doc2 already valid — skipping")
         feat_unwrapped = existing_feat
         feat_raw = existing_feat
     else:
+        print("  [cto] generating doc2 — calling LLM (60–120s for large projects)...")
         tpl2 = _load_template(root, "doc2_features_contract.md")
         feat_raw = call(
             provider,
@@ -255,13 +264,16 @@ def generate_contracts(provider: str, root: Path = ROOT) -> Dict:
         )
         feat_unwrapped = _unwrap_llm_output(feat_raw)
         _save(root, "doc2_features_contract.md", feat_unwrapped)
+        print("  [cto] doc2 saved ✓")
 
     # Parse feature blocks from doc2
+    print("  [cto] parsing feature blocks from doc2...")
     features = _parse_feature_blocks(feat_unwrapped)
     if not features:
         raise RuntimeError(
             "No features parsed from doc2 — cannot generate validation contract."
         )
+    print(f"  [cto] found {len(features)} feature(s): {[f['feature_id'] for f in features]}")
     criteria_summary = json.dumps(
         [
             {"id": f["feature_id"], "criteria": f.get("acceptance_criteria", [])}
@@ -275,6 +287,7 @@ def generate_contracts(provider: str, root: Path = ROOT) -> Dict:
     app_type_m = re.search(r'app_type:\s*"?([\w]+)"?', doc0)
     if app_type_m:
         app_type = app_type_m.group(1).lower()
+    print(f"  [cto] app_type resolved to: '{app_type}'")
 
     if app_type == "api":
         interface_rule = (
@@ -303,12 +316,16 @@ def generate_contracts(provider: str, root: Path = ROOT) -> Dict:
             "with verified_via: executable_test_api so the generator uses requests for them."
         )
 
-    # Delete existing doc3 so template fallback is used (not a stale version)
+    # Read the doc3 template first, then delete any previously generated version
+    # so the LLM always generates fresh from the current doc2 features.
+    tpl3 = _load_template(root, "doc3_validation_contract.md")
     doc3_path = root / "contracts" / "doc3_validation_contract.md"
     if doc3_path.exists():
         doc3_path.unlink()
-    tpl3 = _load_template(root, "doc3_validation_contract.md")
+        print("  [cto] cleared previous doc3 — regenerating from current doc2")
 
+    total_criteria = sum(len(f.get("acceptance_criteria", [])) for f in features)
+    print(f"  [cto] generating doc3 — {len(features)} suites, ~{total_criteria} test cases — calling LLM (60–180s)...")
     val_raw = call(
         provider,
         [
@@ -341,9 +358,12 @@ def generate_contracts(provider: str, root: Path = ROOT) -> Dict:
         max_tokens=32768,
     )
     _save(root, "doc3_validation_contract.md", _unwrap_llm_output(val_raw))
+    print("  [cto] doc3 saved ✓")
 
     # Self-consistency check
+    print("  [cto] running self-consistency check (doc2 ↔ doc3)...")
     _consistency_check(features, val_raw, provider)
+    print("  [cto] consistency check done ✓")
 
     return {"features": features, "sec": sec_raw, "feat": feat_raw, "val": val_raw}
 
@@ -435,16 +455,18 @@ def build_feature_contexts(
 
 def _load_template(root: Path, filename: str) -> str:
     """
-    Load a contract template file.
-    These live in the repo root and define the exact structure the CTO must produce.
-    If the template does not exist, return a minimal fallback hint.
+    Load a contract template (mockup) file.
+    Looks in contracts/templates/ first (permanent mockups, never overwritten),
+    then falls back to contracts/ (for doc1/doc2 which start as templates and
+    get replaced by generated content on first run).
     """
-    p = root / "contracts" / filename
-    return (
-        p.read_text()
-        if p.exists()
-        else f"(template {filename} not found — produce standard structure)"
-    )
+    dedicated = root / "contracts" / "templates" / filename
+    if dedicated.exists():
+        return dedicated.read_text()
+    fallback = root / "contracts" / filename
+    if fallback.exists():
+        return fallback.read_text()
+    return f"(template {filename} not found — produce standard structure)"
 
 
 def append_clarification_round(root: Path, n: int, question: str, answer: str) -> None:
