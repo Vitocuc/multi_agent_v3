@@ -156,7 +156,7 @@ def revise_plan(
 
 
 def _load_contract_if_valid(root: Path, filename: str) -> str | None:
-    """Return file content if it exists and looks like valid markdown (not JSON-wrapped/truncated)."""
+    """Return file content if it exists and looks like a filled contract (not a template or JSON-wrapped)."""
     p = root / "contracts" / filename
     if not p.exists():
         return None
@@ -166,6 +166,19 @@ def _load_contract_if_valid(root: Path, filename: str) -> str | None:
     # Reject if JSON-wrapped (starts with {)
     if raw.strip().startswith("{"):
         return None
+    # Reject if still an unfilled template — any of these markers indicate placeholder content
+    template_markers = [
+        'project_id | |',          # empty table cell
+        'created_at | |',
+        'feature_id:         F-01-001\n',   # default feature_id never overwritten
+        '| F-01-001 | | M-01 |',            # feature tracker still has blank title
+        '[Feature name]',
+        'title:              ""',
+        'status | draft \\| approved \\| superseded',  # unevaluated status placeholder
+    ]
+    for marker in template_markers:
+        if marker in raw:
+            return None
     return raw
 
 
