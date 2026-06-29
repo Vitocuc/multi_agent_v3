@@ -1,0 +1,569 @@
+{
+  "project_id": "protego-life-sim-v1",
+  "project_name": "Protego Life Simulator",
+  "created_at": "2026-06-23T16:53:06.064254",
+  "updated_at": "2026-06-29T20:53:12.327505",
+  "phase": "implementation",
+  "clarification_round": 12,
+  "plan_approved": true,
+  "contracts_approved": true,
+  "features": {
+    "F-01-001": {
+      "feature_id": "F-01-001",
+      "title": "Project Scaffold and Infrastructure Bootstrap",
+      "milestone_id": "M-01",
+      "status": "in_progress",
+      "depends_on": [],
+      "retry_count": 0,
+      "last_error": "Worker exceeded 80 turns without completing",
+      "validator_result": ""
+    },
+    "F-01-002": {
+      "feature_id": "F-01-002",
+      "title": "PostgreSQL Schema and TimescaleDB Hypertable",
+      "milestone_id": "M-01",
+      "status": "pending",
+      "depends_on": [
+        "F-01-001"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    },
+    "F-01-003": {
+      "feature_id": "F-01-003",
+      "title": "Google OAuth Authentication and Age Gate",
+      "milestone_id": "M-01",
+      "status": "pending",
+      "depends_on": [
+        "F-01-001",
+        "F-01-002"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    },
+    "F-01-004": {
+      "feature_id": "F-01-004",
+      "title": "GDPR Onboarding Screen and Consent Recording",
+      "milestone_id": "M-01",
+      "status": "pending",
+      "depends_on": [
+        "F-01-003"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    },
+    "F-01-005": {
+      "feature_id": "F-01-005",
+      "title": "P-Coin Wallet Creation and Weekly Allocation Cron",
+      "milestone_id": "M-01",
+      "status": "pending",
+      "depends_on": [
+        "F-01-004"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    },
+    "F-01-006": {
+      "feature_id": "F-01-006",
+      "title": "FastAPI Behavioral Event Ingestion Service",
+      "milestone_id": "M-01",
+      "status": "pending",
+      "depends_on": [
+        "F-01-002"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    },
+    "F-01-007": {
+      "feature_id": "F-01-007",
+      "title": "Risk Profile and Onboarding Profile Completion",
+      "milestone_id": "M-01",
+      "status": "pending",
+      "depends_on": [
+        "F-01-005",
+        "F-01-006"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    },
+    "F-02-001": {
+      "feature_id": "F-02-001",
+      "title": "Deposit Simulation Flow and Behavioral Alerts",
+      "milestone_id": "M-02",
+      "status": "pending",
+      "depends_on": [
+        "F-01-007"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    },
+    "F-02-002": {
+      "feature_id": "F-02-002",
+      "title": "Risk Arena: Three Abstract Mini-Games",
+      "milestone_id": "M-02",
+      "status": "pending",
+      "depends_on": [
+        "F-02-001"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    },
+    "F-02-003": {
+      "feature_id": "F-02-003",
+      "title": "Future Vault",
+      "milestone_id": "M-02",
+      "status": "pending",
+      "depends_on": [
+        "F-01-007"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    },
+    "F-02-004": {
+      "feature_id": "F-02-004",
+      "title": "Protection Score Engine",
+      "milestone_id": "M-02",
+      "status": "pending",
+      "depends_on": [
+        "F-02-001",
+        "F-02-003"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    },
+    "F-02-005": {
+      "feature_id": "F-02-005",
+      "title": "Dashboard Home Screen",
+      "milestone_id": "M-02",
+      "status": "pending",
+      "depends_on": [
+        "F-02-004",
+        "F-02-002"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    },
+    "F-02-006": {
+      "feature_id": "F-02-006",
+      "title": "Spending Limit and Vault Quota Configuration Screens",
+      "milestone_id": "M-02",
+      "status": "pending",
+      "depends_on": [
+        "F-01-007"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    },
+    "F-03-001": {
+      "feature_id": "F-03-001",
+      "title": "Life Layer: Career Progression and Virtual Expenses",
+      "milestone_id": "M-03",
+      "status": "pending",
+      "depends_on": [
+        "F-01-005",
+        "F-02-004"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    },
+    "F-03-002": {
+      "feature_id": "F-03-002",
+      "title": "Mission System",
+      "milestone_id": "M-03",
+      "status": "pending",
+      "depends_on": [
+        "F-03-001"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    },
+    "F-03-003": {
+      "feature_id": "F-03-003",
+      "title": "365-Day Beta Countdown Timer",
+      "milestone_id": "M-03",
+      "status": "pending",
+      "depends_on": [
+        "F-02-005"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    },
+    "F-03-004": {
+      "feature_id": "F-03-004",
+      "title": "Post-Session Survey Modal",
+      "milestone_id": "M-03",
+      "status": "pending",
+      "depends_on": [
+        "F-02-002"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    },
+    "F-03-005": {
+      "feature_id": "F-03-005",
+      "title": "Cookie Consent Banner",
+      "milestone_id": "M-03",
+      "status": "pending",
+      "depends_on": [
+        "F-01-001"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    },
+    "F-03-006": {
+      "feature_id": "F-03-006",
+      "title": "Italian i18n Completeness Pass",
+      "milestone_id": "M-03",
+      "status": "pending",
+      "depends_on": [
+        "F-03-001",
+        "F-03-002",
+        "F-03-003",
+        "F-03-004",
+        "F-03-005"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    },
+    "F-04-001": {
+      "feature_id": "F-04-001",
+      "title": "Metabase OSS KPI Dashboard Setup",
+      "milestone_id": "M-04",
+      "status": "pending",
+      "depends_on": [
+        "F-01-006",
+        "F-01-002"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    },
+    "F-04-002": {
+      "feature_id": "F-04-002",
+      "title": "Admin CSV Export Route",
+      "milestone_id": "M-04",
+      "status": "pending",
+      "depends_on": [
+        "F-01-006",
+        "F-01-002"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    },
+    "F-04-003": {
+      "feature_id": "F-04-003",
+      "title": "GDPR Data Export Endpoint (Right of Access)",
+      "milestone_id": "M-04",
+      "status": "pending",
+      "depends_on": [
+        "F-01-004",
+        "F-01-006"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    },
+    "F-04-004": {
+      "feature_id": "F-04-004",
+      "title": "GDPR Data Deletion Endpoint (Right to Erasure)",
+      "milestone_id": "M-04",
+      "status": "pending",
+      "depends_on": [
+        "F-04-003"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    },
+    "F-04-005": {
+      "feature_id": "F-04-005",
+      "title": "Security Headers and CSP Configuration",
+      "milestone_id": "M-04",
+      "status": "pending",
+      "depends_on": [
+        "F-01-001"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    },
+    "F-04-006": {
+      "feature_id": "F-04-006",
+      "title": "Global Rate Limiting and DDoS Protection",
+      "milestone_id": "M-04",
+      "status": "pending",
+      "depends_on": [
+        "F-01-001",
+        "F-01-003"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    },
+    "F-04-007": {
+      "feature_id": "F-04-007",
+      "title": "Dependency Audit and Vulnerability Scanning CI Step",
+      "milestone_id": "M-04",
+      "status": "pending",
+      "depends_on": [
+        "F-01-001"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    },
+    "F-04-008": {
+      "feature_id": "F-04-008",
+      "title": "P-Coin Zero Monetary Value Technical Enforcement",
+      "milestone_id": "M-04",
+      "status": "pending",
+      "depends_on": [
+        "F-01-005"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    },
+    "F-04-009": {
+      "feature_id": "F-04-009",
+      "title": "End-to-End Privacy Audit and GDPR Compliance Report",
+      "milestone_id": "M-04",
+      "status": "pending",
+      "depends_on": [
+        "F-04-003",
+        "F-04-004",
+        "F-04-005",
+        "F-04-006",
+        "F-04-008",
+        "F-03-005",
+        "F-03-006"
+      ],
+      "retry_count": 0,
+      "last_error": "",
+      "validator_result": ""
+    }
+  },
+  "cto_model": "claude",
+  "validator_model": "gemini",
+  "last_error": "",
+  "consecutive_errors": 0,
+  "log": [
+    {
+      "ts": "2026-06-23T16:53:06.064303",
+      "level": "info",
+      "message": "Project started",
+      "detail": ""
+    },
+    {
+      "ts": "2026-06-23T16:55:14.960126",
+      "level": "info",
+      "message": "Clarification round 1",
+      "detail": ""
+    },
+    {
+      "ts": "2026-06-23T16:56:09.744465",
+      "level": "info",
+      "message": "Clarification round 2",
+      "detail": ""
+    },
+    {
+      "ts": "2026-06-23T16:56:58.188304",
+      "level": "info",
+      "message": "Clarification round 3",
+      "detail": ""
+    },
+    {
+      "ts": "2026-06-23T16:58:29.348376",
+      "level": "info",
+      "message": "Clarification round 4",
+      "detail": ""
+    },
+    {
+      "ts": "2026-06-23T16:59:41.807350",
+      "level": "info",
+      "message": "Clarification round 5",
+      "detail": ""
+    },
+    {
+      "ts": "2026-06-23T17:00:21.595571",
+      "level": "info",
+      "message": "Clarification round 6",
+      "detail": ""
+    },
+    {
+      "ts": "2026-06-23T17:01:42.668552",
+      "level": "info",
+      "message": "Clarification round 7",
+      "detail": ""
+    },
+    {
+      "ts": "2026-06-23T17:03:58.333795",
+      "level": "info",
+      "message": "Clarification round 8",
+      "detail": ""
+    },
+    {
+      "ts": "2026-06-23T17:08:14.539927",
+      "level": "info",
+      "message": "Clarification round 9",
+      "detail": ""
+    },
+    {
+      "ts": "2026-06-23T17:13:09.631177",
+      "level": "info",
+      "message": "Clarification round 10",
+      "detail": ""
+    },
+    {
+      "ts": "2026-06-23T17:13:36.612844",
+      "level": "info",
+      "message": "Clarification round 11",
+      "detail": ""
+    },
+    {
+      "ts": "2026-06-23T17:15:22.293431",
+      "level": "info",
+      "message": "Clarification round 12",
+      "detail": ""
+    },
+    {
+      "ts": "2026-06-23T17:17:23.130879",
+      "level": "info",
+      "message": "Plan ready for review",
+      "detail": ""
+    },
+    {
+      "ts": "2026-06-23T17:22:32.868768",
+      "level": "info",
+      "message": "Gate plan_approval resolved: approve",
+      "detail": ""
+    },
+    {
+      "ts": "2026-06-23T17:25:34.277341",
+      "level": "info",
+      "message": "Gate None resolved: approve",
+      "detail": ""
+    },
+    {
+      "ts": "2026-06-23T17:59:28.664103",
+      "level": "info",
+      "message": "Contracts generated: 28 features",
+      "detail": ""
+    },
+    {
+      "ts": "2026-06-29T15:18:27.643937",
+      "level": "info",
+      "message": "Gate contract_approval resolved: approve",
+      "detail": ""
+    },
+    {
+      "ts": "2026-06-29T15:18:59.871292",
+      "level": "info",
+      "message": "Selected 7 features: ['F-01-001', 'F-01-002', 'F-01-003', 'F-01-004', 'F-01-005', 'F-01-006', 'F-01-007']",
+      "detail": ""
+    },
+    {
+      "ts": "2026-06-29T15:30:42.316173",
+      "level": "error",
+      "message": "Worker F-01-001 failed",
+      "detail": "Worker exceeded 80 turns without completing"
+    },
+    {
+      "ts": "2026-06-29T15:30:42.356605",
+      "level": "error",
+      "message": "F-01-002 blocked by failed deps",
+      "detail": "Blocked: dependencies failed — F-01-001"
+    },
+    {
+      "ts": "2026-06-29T15:30:42.393425",
+      "level": "error",
+      "message": "F-01-003 blocked by failed deps",
+      "detail": "Blocked: dependencies failed — F-01-001, F-01-002"
+    },
+    {
+      "ts": "2026-06-29T15:30:42.434336",
+      "level": "error",
+      "message": "F-01-004 blocked by failed deps",
+      "detail": "Blocked: dependencies failed — F-01-003"
+    },
+    {
+      "ts": "2026-06-29T15:30:42.467873",
+      "level": "error",
+      "message": "F-01-005 blocked by failed deps",
+      "detail": "Blocked: dependencies failed — F-01-004"
+    },
+    {
+      "ts": "2026-06-29T15:30:42.503239",
+      "level": "error",
+      "message": "F-01-006 blocked by failed deps",
+      "detail": "Blocked: dependencies failed — F-01-002"
+    },
+    {
+      "ts": "2026-06-29T15:30:42.537815",
+      "level": "error",
+      "message": "F-01-007 blocked by failed deps",
+      "detail": "Blocked: dependencies failed — F-01-005, F-01-006"
+    },
+    {
+      "ts": "2026-06-29T15:30:42.541700",
+      "level": "info",
+      "message": "Reset 6 blocked features to pending: ['F-01-005', 'F-01-002', 'F-01-006', 'F-01-003', 'F-01-007', 'F-01-004']",
+      "detail": ""
+    },
+    {
+      "ts": "2026-06-29T20:33:39.552487",
+      "level": "info",
+      "message": "Gate None resolved: approve",
+      "detail": ""
+    },
+    {
+      "ts": "2026-06-29T20:33:44.517430",
+      "level": "info",
+      "message": "Gate None resolved: approve",
+      "detail": ""
+    },
+    {
+      "ts": "2026-06-29T20:34:54.045144",
+      "level": "info",
+      "message": "Selected 1 features: ['F-01-001']",
+      "detail": ""
+    },
+    {
+      "ts": "2026-06-29T20:46:59.636463",
+      "level": "error",
+      "message": "Worker F-01-001 failed",
+      "detail": "Worker exceeded 80 turns without completing"
+    },
+    {
+      "ts": "2026-06-29T20:47:26.628088",
+      "level": "info",
+      "message": "Selected 1 features: ['F-01-001']",
+      "detail": ""
+    },
+    {
+      "ts": "2026-06-29T20:53:12.327471",
+      "level": "info",
+      "message": "Worker F-01-001 complete — pipeline will commit+push",
+      "detail": ""
+    }
+  ]
+}

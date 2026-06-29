@@ -1,0 +1,138 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+  push:
+    branches:
+      - main
+      - develop
+
+# Prevent secrets from being printed to logs
+env:
+  CI: true
+  NODE_ENV: test
+
+jobs:
+  nextjs-lint-typecheck:
+    name: Next.js — ESLint & TypeScript
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        # Note: NEVER print env var values — use --quiet to suppress extra output
+        run: npm run lint
+
+      - name: TypeScript type-check
+        run: npm run type-check
+
+  prisma-validate:
+    name: Prisma — Schema Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate Prisma schema
+        # DATABASE_URL is only needed for migrations, not schema validation
+        env:
+          DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
+        run: npm run prisma:validate
+
+  jest-tests:
+    name: Next.js — Jest Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Jest tests
+        env:
+          # Provide non-secret placeholder values for test environment
+          DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
+          NEXTAUTH_URL: http://localhost:3000
+          NEXTAUTH_SECRET: test_secret_not_real
+        run: npm run test:ci
+
+  node-audit:
+    name: Node.js — Dependency Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit (high/critical only)
+        run: npm audit --audit-level=high
+
+  python-lint-test-audit:
+    name: FastAPI — Lint, Test & Audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/events
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Run ruff lint
+        run: ruff check .
+
+      - name: Run pytest
+        env:
+          # Placeholder values — no real credentials in CI logs
+          DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
+        run: pytest tests/ -v
+
+      - name: Run pip-audit
+        run: pip-audit --requirement <(uv pip compile pyproject.toml) || true

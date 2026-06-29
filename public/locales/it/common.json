@@ -1,0 +1,51 @@
+{
+  "app": {
+    "name": "Protego Life Simulator",
+    "tagline": "Allena la tua disciplina finanziaria",
+    "description": "Simulatore di finanza comportamentale per allenare la disciplina finanziaria. Nessun denaro reale — solo crescita personale."
+  },
+  "nav": {
+    "home": "Home",
+    "dashboard": "Dashboard",
+    "arena": "Arena del Rischio",
+    "vault": "Caveau del Futuro",
+    "profile": "Profilo",
+    "logout": "Esci"
+  },
+  "auth": {
+    "loginWithGoogle": "Accedi con Google",
+    "loginPrompt": "Accedi per iniziare la simulazione",
+    "logout": "Disconnetti",
+    "notAuthenticated": "Non sei autenticato"
+  },
+  "wallet": {
+    "balance": "Saldo P-Coin",
+    "weeklyLimit": "Limite Settimanale",
+    "monthlyLimit": "Limite Mensile",
+    "vault": "Caveau del Futuro",
+    "pcoin": "P-Coin"
+  },
+  "errors": {
+    "generic": "Si è verificato un errore. Riprova più tardi.",
+    "notFound": "Pagina non trovata",
+    "unauthorized": "Accesso non autorizzato",
+    "forbidden": "Non hai i permessi per questa azione"
+  },
+  "gdpr": {
+    "title": "Termini e Consenso",
+    "accept": "Accetto i Termini",
+    "decline": "Rifiuto",
+    "description": "Per utilizzare Protego Life Simulator, devi accettare i nostri termini di utilizzo e la nostra politica sulla privacy."
+  },
+  "beta": {
+    "badge": "Beta",
+    "countdown": "Giorni rimasti al termine della beta",
+    "start": "Inizia il tuo percorso"
+  },
+  "home": {
+    "headline": "Allena la tua disciplina finanziaria",
+    "subheadline": "Nessun denaro reale — solo crescita personale",
+    "cta": "Inizia Ora",
+    "ctaPrompt": "Accedi con Google per iniziare la simulazione"
+  }
+}

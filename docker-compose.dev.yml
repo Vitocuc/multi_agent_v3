@@ -1,0 +1,107 @@
+version: '3.9'
+
+# Local development environment for Protego Life Simulator
+# All five Railway EU West Frankfurt services mirrored locally.
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml up -d
+#
+# Prerequisites:
+#   - Copy .env.example to .env.local and fill in GOOGLE_CLIENT_ID/SECRET
+#   - Never commit .env.local or .env
+
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: protego
+      POSTGRES_PASSWORD: protego_pass
+      POSTGRES_DB: protego
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U protego -d protego"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  events:
+    build:
+      context: services/events
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://protego:protego_pass@db:5432/protego
+      ALLOWED_ORIGINS: http://localhost:3000
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  metabase:
+    image: metabase/metabase:v0.49.0
+    restart: unless-stopped
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_DBNAME: metabase
+      MB_DB_PORT: "5432"
+      MB_DB_USER: protego
+      MB_DB_PASS: protego_pass
+      MB_DB_HOST: db
+    ports:
+      - "3001:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  nextjs:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://protego:protego_pass@db:5432/protego
+      REDIS_URL: redis://redis:6379
+      NEXTAUTH_URL: http://localhost:3000
+      # NEXTAUTH_SECRET and GOOGLE_* must be set in .env.local — never hardcoded
+      NEXT_PUBLIC_EVENT_API_URL: http://events:8000
+      NODE_ENV: development
+    env_file:
+      - .env.local
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      events:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/.next
+
+volumes:
+  postgres_data:

@@ -1,0 +1,64 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// User profile — created after Google OAuth + age gate passes
+model UserProfile {
+  id            String   @id @default(cuid())
+  googleId      String   @unique @map("google_id")
+  email         String   @unique
+  displayName   String   @map("display_name")
+  dateOfBirth   DateTime @map("date_of_birth")
+  termsAccepted Boolean  @default(false) @map("terms_accepted")
+  termsAcceptedAt DateTime? @map("terms_accepted_at")
+  riskProfile   String?  @map("risk_profile")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  wallet        Wallet?
+  auditLogs     AuditLog[]
+
+  @@map("user_profiles")
+}
+
+// Virtual wallet for P-Coin management
+model Wallet {
+  id            String   @id @default(cuid())
+  userId        String   @unique @map("user_id")
+  balance       Decimal  @default(0) @db.Decimal(18, 2)
+  weeklyLimit   Decimal  @default(100) @map("weekly_limit") @db.Decimal(18, 2)
+  monthlyLimit  Decimal  @default(400) @map("monthly_limit") @db.Decimal(18, 2)
+  vaultBalance  Decimal  @default(0) @map("vault_balance") @db.Decimal(18, 2)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  user          UserProfile @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("wallets")
+}
+
+// Audit log for security-relevant events
+model AuditLog {
+  id          String   @id @default(cuid())
+  userId      String?  @map("user_id")
+  eventType   String   @map("event_type")
+  ipAddress   String?  @map("ip_address")
+  userAgent   String?  @map("user_agent")
+  metadata    Json?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user        UserProfile? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([eventType])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
